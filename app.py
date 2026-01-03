@@ -1,91 +1,90 @@
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
-import os
 
-# Tải biến môi trường ngay đầu tiên
+# 1. Load biến môi trường
 load_dotenv()
 
-# Import các module
+# 2. Import các module
 from modules.data_handler import (
-    tai_du_lieu_csv, tao_du_lieu_mau, luu_du_lieu_csv, sync_images_with_dataframe
+    fetch_all_orders,
+    kiem_tra_ket_noi,
+    tai_danh_sach_trang_thai,
+    luu_danh_sach_trang_thai
 )
-from modules.ui_components import render_order_management, render_ai_design
-from modules.dashboard import render_dashboard
+from modules.ui_components import (
+    render_order_management,
+    hien_thi_form_tao_don
+)
 
 # ============================================
-# CẤU HÌNH TRANG
+# CẤU HÌNH TRANG & CSS
 # ============================================
 st.set_page_config(
-    page_title="App Quản lý Đơn hàng Thêu",
+    page_title="Hệ thống Quản lý Xưởng Thêu",
     page_icon="🧵",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ============================================
-# CACHED DATA LOADER (TỐI ƯU HIỆU NĂNG)
-# ============================================
-@st.cache_data(ttl=300)  # Cache 5 phút
-def load_data_cached():
-    """Load dữ liệu với cache để tăng tốc"""
-    df = tai_du_lieu_csv()
-    if df is None:
-        df = tao_du_lieu_mau()
-        luu_du_lieu_csv(df)
-    return df
+def inject_custom_css():
+    st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        * { font-family: 'Inter', sans-serif; }
+        .main { background-color: #f8f9fa; }
+        div[data-testid="stMetric"], div.stButton > button { border-radius: 8px; }
+        button[kind="primary"] { background-color: #2563eb; transition: 0.3s; }
+        button[kind="primary"]:hover { background-color: #1d4ed8; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3); }
+    </style>
+    """, unsafe_allow_html=True)
+
+inject_custom_css()
 
 # ============================================
-# KHỞI TẠO SESSION STATE
+# KIỂM TRA KẾT NỐI
 # ============================================
-if 'df_don_hang' not in st.session_state:
-    st.session_state.df_don_hang = load_data_cached()
-    sync_images_with_dataframe(st.session_state.df_don_hang)
-
-# ============================================
-# SIDEBAR ĐIỀU HƯỚNG
-# ============================================
-st.sidebar.title("🧵 Menu Điều hướng")
-
-# Hiển thị trạng thái AI nếu đang xử lý
-if st.session_state.get('is_processing_ai'):
-    st.sidebar.warning(f"⏳ Đang xử lý AI cho đơn {st.session_state.processing_ma_don}...")
-    st.sidebar.caption("Bạn có thể tiếp tục làm việc, AI đang chạy ngầm.")
-
-# Menu chọn trang
-page = st.sidebar.radio(
-    "Chọn trang:",
-    ["📦 Quản lý Đơn hàng", "🎨 Trợ lý AI Design", "📊 Dashboard"],
-    index=0
-)
-
-st.sidebar.markdown("---")
-
-# Thông tin phiên bản
-st.sidebar.info("💡 **Phiên bản 3.3 Modular**\n\n- Kiến trúc module hóa\n- Dashboard thống kê\n- Tối ưu hiệu năng")
+if "db_connected" not in st.session_state:
+    with st.spinner("🔄 Đang kết nối máy chủ dữ liệu..."):
+        if kiem_tra_ket_noi():
+            st.session_state.db_connected = True
+        else:
+            st.error("❌ MẤT KẾT NỐI SUPABASE! Vui lòng kiểm tra file .env hoặc mạng internet.")
+            st.stop()
 
 # ============================================
-# ĐIỀU PHỐI TRANG (MAIN ROUTER)
+# SIDEBAR
 # ============================================
-if page == "📦 Quản lý Đơn hàng":
-    render_order_management(st.session_state.df_don_hang)
-
-elif page == "🎨 Trợ lý AI Design":
-    render_ai_design(st.session_state.df_don_hang)
-
-elif page == "📊 Dashboard":
-    render_dashboard(st.session_state.df_don_hang)
+with st.sidebar:
+    st.markdown("<h2 style='text-align: center;'>🧵 Xưởng Thêu 4.0</h2>", unsafe_allow_html=True)
+    st.markdown("---")
+    
+    page = st.radio(
+        "Điều hướng",
+        ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "⚙️ Cấu hình"],
+        index=0
+    )
+    
+    st.markdown("---")
+    st.success("🟢 Hệ thống Online")
 
 # ============================================
-# FOOTER
+# MAIN ROUTER
 # ============================================
-st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: gray; padding: 20px;'>
-        <p>🧵 <b>App Quản lý Đơn hàng Thêu</b> | Phiên bản 3.3 Modular | © 2025</p>
-        <p>Được xây dựng bằng Streamlit 🎈 + Plotly 📊</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+
+if page == "📊 Quản lý Đơn hàng":
+    df_orders = fetch_all_orders()
+    render_order_management(df_orders)
+
+elif page == "📝 Tạo Đơn Mới":
+    hien_thi_form_tao_don()
+
+elif page == "⚙️ Cấu hình":
+    st.title("⚙️ Cấu hình Trạng thái")
+    df_status = tai_danh_sach_trang_thai()
+    edited_df = st.data_editor(df_status, num_rows="dynamic", use_container_width=True)
+    
+    if st.button("💾 Lưu Cấu Hình", type="primary"):
+        if luu_danh_sach_trang_thai(edited_df):
+            st.success("✅ Đã lưu cấu hình!")
+            st.cache_data.clear()

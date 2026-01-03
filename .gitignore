@@ -29,3 +29,8 @@ saved_pets/
 .DS_Store
 Thumbs.db
 
+# Junk
+New folder/
+*.rar
+test_connect.py
+

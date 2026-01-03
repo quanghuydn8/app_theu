@@ -1,43 +1,30 @@
-# Module Package for App Quản lý Đơn hàng Thêu
-# Version 3.3 Modular
+# File: modules/__init__.py
 
+# 1. Export các hàm từ data_handler
 from .data_handler import (
-    check_file_exists,
-    luu_anh_pet,
-    luu_anh_design,
-    tai_anh_design,
-    luu_du_lieu_csv,
-    tai_du_lieu_csv,
-    tao_du_lieu_mau,
-    tao_chi_tiet_don_hang,
-    sync_images_with_dataframe,
-    DIR_DESIGNS,
-    DIR_PETS,
-    CSV_FILE
+    supabase,
+    fetch_all_orders,
+    get_order_details,
+    save_full_order,
+    update_order_status,
+    tai_danh_sach_trang_thai,
+    luu_danh_sach_trang_thai,
+    upload_image_to_supabase, # <--- Hàm mới
+    update_item_image,        # <--- Hàm mới
+    kiem_tra_ket_noi
 )
 
-from .ai_logic import (
-    configure_ai,
-    xuly_ai_gemini,
-    gen_anh_mau_theu
-)
-
+# 2. Export các hàm từ ui_components
 from .ui_components import (
-    tao_badge_trang_thai,
-    tao_mau_nen_trang_thai,
     render_order_management,
-    render_ai_design
+    hien_thi_form_tao_don
 )
 
-from .dashboard import (
-    render_dashboard,
-    calculate_metrics,
-    create_status_pie_chart,
-    create_top_products_chart,
-    create_orders_timeline_chart
+# 3. Export các hàm từ ai_logic
+from .ai_logic import (
+    gen_anh_mau_theu,
+    xuly_ai_gemini
 )
 
-from .notifier import (
-    send_telegram_notification
-)
-
+# 4. Export hàm thông báo
+from .notifier import send_telegram_notification
