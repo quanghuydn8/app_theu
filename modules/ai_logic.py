@@ -3,7 +3,7 @@ import os
 import json
 from datetime import datetime
 from dotenv import load_dotenv
-from PIL import Image, ImageDraw, ImageFont # Thêm thư viện xử lý ảnh
+from PIL import Image
 import io
 
 # Load biến môi trường
@@ -26,8 +26,7 @@ def configure_ai():
 
 def xuly_ai_gemini(text_input):
     """
-    Hàm trích xuất thông tin đơn hàng và xác định Shop (Line sản phẩm).
-    OUTPUT: Trả về TUPLE (Mapped_Data_Dict, Raw_String)
+    Hàm trích xuất thông tin đơn hàng và xác định Shop.
     """
     if not configure_ai(): 
         return None, "Lỗi: Chưa cấu hình Google API Key"
@@ -35,141 +34,121 @@ def xuly_ai_gemini(text_input):
     try:
         today_str = datetime.now().strftime("%d/%m/%Y")
         
-        # PROMPT MỚI: Tách mảng sản phẩm & Nhận diện Shop
         system_instruction = f"""
         Hôm nay là: {today_str}.
         Nhiệm vụ: Phân tích đoạn chat thành JSON và xác định mã SHOP.
         
         1. XÁC ĐỊNH SHOP (Quan trọng):
-           Nhân viên sẽ ghi mã shop trong đoạn chat. Hãy bắt các từ khóa sau:
            - "TGTD" hoặc "TGTĐ" -> shop: "TGTĐ"
            - "Inside" hoặc "IS"   -> shop: "Inside"
            - "Lanh Canh" hoặc "LC" -> shop: "Lanh Canh"
-           - Nếu không tìm thấy mã, mặc định là: "Inside"
+           - Default: "Inside"
         
-        2. QUY TẮC CHUNG:
-           - Tách từng sản phẩm vào mảng "products".
-           - Tiền tệ: Chỉ lấy số nguyên.
-           - Ngày trả: Tính ra YYYY-MM-DD.
-        
-        OUTPUT FORMAT (JSON):
+        2. OUTPUT JSON FORMAT:
         {{
             "customer_info": {{
-                "ten_khach": "...",
-                "sdt": "...",
-                "dia_chi": "...",
-                "ngay_tra": "YYYY-MM-DD",
-                "shop": "TGTĐ" | "Inside" | "Lanh Canh",
-                "tong_tien": 0,
-                "da_coc": 0,
-                "httt": "Ship COD",
-                "van_chuyen": "Thường",
-                "ghi_chu_chung": "..."
+                "ten_khach": "...", "sdt": "...", "dia_chi": "...",
+                "ngay_tra": "YYYY-MM-DD", "shop": "...",
+                "tong_tien": 0, "da_coc": 0, "httt": "...", "van_chuyen": "..."
             }},
-            "products": [
-                {{
-                    "ten_sp": "Tên SP 1",
-                    "mau": "Màu",
-                    "size": "Size",
-                    "kieu_theu": "...",
-                    "ghi_chu_sp": "..."
-                }},
-                {{ "ten_sp": "Tên SP 2", ... }}
-            ]
+            "products": [ {{ "ten_sp": "...", "mau": "...", "size": "...", "kieu_theu": "..." }} ]
         }}
         """
         
+        # Lưu ý: Model 2.5 flash cho text analysis (nếu key hỗ trợ)
+        # Nếu lỗi model not found, bro đổi về 'gemini-1.5-flash' nhé.
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash', 
+            model_name='gemini-2.5-flash', 
             system_instruction=system_instruction,
             generation_config={"response_mime_type": "application/json"}
         )
         
-        full_prompt = f"Phân tích đơn này: {text_input}"
-        response = model.generate_content(full_prompt)
-        raw_text = response.text 
+        response = model.generate_content(f"Phân tích đơn: {text_input}")
         
-        if raw_text:
-            data = json.loads(raw_text)
+        if response.text:
+            data = json.loads(response.text)
+            if isinstance(data, list): data = data[0] if len(data) > 0 else {}
             
-            # --- FIX LỖI: AI trả về List thay vì Dict ---
-            if isinstance(data, list):
-                if len(data) > 0:
-                    data = data[0]
-                else:
-                    return None, "AI trả về danh sách rỗng"
-            # -------------------------------------------
+            cust = data.get("customer_info", {}) or data
+            products = data.get("products", []) or [{
+                "ten_sp": data.get("san_pham", ""), "mau": data.get("mau_sac", ""), 
+                "size": data.get("size", ""), "kieu_theu": data.get("yeu_cau_theu", "")
+            }]
             
-            # Lấy dữ liệu an toàn
-            cust = data.get("customer_info", {})
-            products = data.get("products", [])
-            
-            # Fallback nếu AI trả về cấu trúc cũ
-            if not cust and not products:
-                 cust = data
-                 products = [{
-                     "ten_sp": data.get("san_pham", ""),
-                     "mau": data.get("mau_sac", ""),
-                     "size": data.get("size", ""),
-                     "kieu_theu": data.get("yeu_cau_theu", ""),
-                     "ghi_chu_sp": data.get("ghi_chu", "")
-                 }]
-            
-            # Chuẩn hóa tên Shop (để chắc chắn mapping đúng 100% với Code UI)
+            # Chuẩn hóa Shop
             raw_shop = cust.get("shop", "Inside")
-            final_shop = "Inside" # Mặc định
-            if raw_shop in ["TGTĐ", "TGTD"]: final_shop = "TGTĐ"
-            elif raw_shop in ["Inside", "IS"]: final_shop = "Inside"
-            elif raw_shop in ["Lanh Canh", "LC"]: final_shop = "Lanh Canh"
+            shop = "Inside"
+            if raw_shop in ["TGTĐ", "TGTD"]: shop = "TGTĐ"
+            elif raw_shop in ["Lanh Canh", "LC"]: shop = "Lanh Canh"
 
-            # Mapping dữ liệu trả về cho UI
-            mapped_data = {
-                # Thông tin khách
+            return {
                 "ten_khach_hang": cust.get("ten_khach", ""),
                 "so_dien_thoai": cust.get("sdt", ""),
                 "dia_chi": cust.get("dia_chi", ""),
                 "ngay_tra": cust.get("ngay_tra", None),
-                "shop": final_shop, # <--- Trường Shop đã chuẩn hóa
+                "shop": shop,
                 "tong_tien": int(cust.get("tong_tien", 0)),
                 "da_coc": int(cust.get("da_coc", 0)),
                 "httt": cust.get("httt", "Ship COD"),
                 "van_chuyen": cust.get("van_chuyen", "Thường"),
-                
-                # DANH SÁCH SẢN PHẨM (List of Dicts)
                 "items": products 
-            }
-            
-            return mapped_data, raw_text
+            }, response.text
             
     except Exception as e:
-        return None, f"Lỗi Exception: {str(e)}"
+        return None, f"Lỗi: {str(e)}"
     
-    return None, "AI trả về rỗng"
+    return None, "AI rỗng"
 
-# --- HÀM TẠO ẢNH GIẢ LẬP (ĐỂ TEST QUY TRÌNH) ---
-def create_placeholder_image(text="AI Generated"):
-    """Tạo một ảnh PNG đơn giản chứa text"""
-    try:
-        img = Image.new('RGB', (512, 512), color=(73, 109, 137))
-        d = ImageDraw.Draw(img)
-        d.text((50, 250), f"AI DESIGN:\n{text}", fill=(255, 255, 0))
-        img_byte_arr = io.BytesIO()
-        img.save(img_byte_arr, format='PNG')
-        return img_byte_arr.getvalue()
-    except:
+def gen_anh_mau_theu(image_input_bytes, custom_prompt):
+    """
+    Hàm tạo ảnh mẫu thêu bằng Google Gemini 3 Image Preview.
+    Gửi: [Prompt + Ảnh Upload + Ảnh Style Ref]
+    """
+    if not configure_ai(): 
+        print("❌ Chưa cấu hình AI")
         return None
-
-def gen_anh_mau_theu(prompt_text):
-    """
-    Hàm gọi AI vẽ mẫu. 
-    Hiện tại dùng giả lập để test luồng upload Supabase.
-    Sau này có key xịn thì thay bằng code gọi API Imagen.
-    """
-    if not configure_ai(): return None
     
-    # Giả lập delay như đang vẽ thật
-    import time
-    time.sleep(1) 
-    
-    # Trả về bytes của ảnh giả lập
-    return create_placeholder_image(prompt_text)
+    try:
+        # 1. Cấu hình model Image Generation mới nhất
+        model = genai.GenerativeModel(model_name='gemini-3-pro-image-preview')
+        
+        # 2. Load ảnh input
+        img_input = Image.open(io.BytesIO(image_input_bytes))
+        
+        # 3. Load ảnh style reference
+        style_img = None
+        style_path = "style_mau.jpg"
+        
+        if os.path.exists(style_path):
+            try:
+                style_img = Image.open(style_path)
+                print("✅ Đã load style_mau.jpg")
+            except: pass
+        
+        # 4. Prompt Engineering cho Thêu
+        full_prompt = f"""tạo file thêu cho phần đầu của con vật, giữ đúng góc mặt, màu lông, chi tiết. tương tự như mẫu file thêu ở hình mẫu
+        """
+        
+        # 5. Payload
+        content_parts = [full_prompt, img_input]
+        if style_img:
+            content_parts.append("Style Reference:")
+            content_parts.append(style_img)
+        
+        # 6. Generate
+        print(f"🎨 Đang gen ảnh với {model.model_name}...")
+        response = model.generate_content(content_parts)
+        
+        # 7. Extract Image Data
+        if response.candidates:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    print("✅ Đã nhận được ảnh từ AI!")
+                    return part.inline_data.data
+                
+        print("⚠️ Không tìm thấy ảnh trong response.")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Lỗi gen ảnh AI: {e}")
+        return None

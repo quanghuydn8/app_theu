@@ -28,3 +28,5 @@ from .ai_logic import (
 
 # 4. Export hàm thông báo
 from .notifier import send_telegram_notification
+
+from .printer import generate_print_html

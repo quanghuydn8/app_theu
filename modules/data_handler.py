@@ -158,6 +158,42 @@ def update_item_image(item_id, image_url, column_name="img_main"):
         print(f"❌ Lỗi cập nhật DB: {e}")
         return False
 
+def upload_multiple_files_to_supabase(files, item_id):
+    """
+    Upload nhiều file thiết kế cùng lúc lên Supabase.
+    
+    Args:
+        files: List các file upload từ Streamlit
+        item_id: ID của item trong order_items
+    
+    Returns:
+        String chứa các URL nối với nhau bằng dấu chấm phẩy " ; "
+    """
+    try:
+        uploaded_urls = []
+        
+        for idx, file_data in enumerate(files):
+            # Tạo tên file unique
+            file_name = f"item_{item_id}_design_{idx}_{file_data.name}"
+            
+            # Upload từng file
+            url = upload_image_to_supabase(file_data, file_name, folder="designs")
+            
+            if url:
+                uploaded_urls.append(url)
+            else:
+                print(f"⚠️ Không upload được file {file_data.name}")
+        
+        # Nối các URL bằng dấu " ; "
+        if uploaded_urls:
+            return " ; ".join(uploaded_urls)
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"❌ Lỗi upload multiple files: {e}")
+        return None
+
 # ... (Các hàm cũ giữ nguyên) ...
 
 def update_order_info(ma_don, update_data):
@@ -170,3 +206,27 @@ def update_order_info(ma_don, update_data):
     except Exception as e:
         print(f"❌ Lỗi update đơn: {e}")
         return False
+# ==============================================================================
+# AUTHENTICATION FUNCTIONS
+# ==============================================================================
+
+def login_user(email, password):
+    """
+    Đăng nhập bằng Email/Pass qua Supabase Auth
+    Trả về: User Object nếu thành công, None nếu thất bại
+    """
+    try:
+        # Gọi hàm sign_in_with_password của Supabase
+        response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        # Nếu có user và session nghĩa là đăng nhập thành công
+        if response.user and response.session:
+            return response.user
+            
+        return None
+    except Exception as e:
+        print(f"❌ Lỗi đăng nhập: {str(e)}")
+        return None
