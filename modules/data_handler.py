@@ -45,16 +45,153 @@ def get_order_details(ma_don):
     except:
         return None, []
 
+def lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop):
+    """
+    Kiểm tra SĐT đã tồn tại chưa:
+    - Nếu có: Trả về ID, update thông tin mới.
+    - Nếu chưa: Tạo mới và trả về ID.
+    """
+    try:
+        # 1. Tìm khách hàng theo SĐT
+        response = supabase.table("khach_hang").select("*").eq("sdt", sdt).execute()
+        
+        if response.data:
+            # Khách đã tồn tại -> Update thông tin & Tăng số đơn
+            khach = response.data[0]
+            khach_id = khach['id']
+            so_don_cu = khach.get('so_don_hang', 0) or 0
+            
+            update_data = {
+                "ho_ten": ten_khach, # Cập nhật tên mới nhất (nếu thay đổi)
+                "dia_chi": dia_chi,  # Cập nhật địa chỉ mới nhất
+                "so_don_hang": so_don_cu + 1,
+                "nguon_shop": shop   # Cập nhật shop gần nhất
+            }
+            supabase.table("khach_hang").update(update_data).eq("id", khach_id).execute()
+            return khach_id
+            
+        else:
+            # Khách chưa tồn tại -> Tạo mới
+            new_customer = {
+                "ho_ten": ten_khach,
+                "sdt": sdt,
+                "dia_chi": dia_chi,
+                "nguon_shop": shop,
+                "so_don_hang": 1
+            }
+            res = supabase.table("khach_hang").insert(new_customer).execute()
+            if res.data:
+                return res.data[0]['id']
+            return None
+            
+    except Exception as e:
+        print(f"❌ Lỗi xử lý khách hàng: {e}")
+        return None
+
+def lay_danh_sach_khach_hang(search_term=None):
+    """Lấy danh sách khách hàng, có hỗ trợ tìm kiếm"""
+    try:
+        query = supabase.table("khach_hang").select("*").order("created_at", desc=True) # Sort by recently created
+        
+        if search_term:
+            # Tìm theo SĐT hoặc Tên (dùng ilike cho tên)
+            # Cú pháp OR trong Supabase: .or_("col1.op.val,col2.op.val")
+            query = query.or_(f"sdt.ilike.%{search_term}%,ho_ten.ilike.%{search_term}%")
+        
+        response = query.execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        return pd.DataFrame()
+
+def lay_lich_su_khach(khach_hang_id):
+    """Lấy danh sách đơn hàng của một khách"""
+    try:
+        response = supabase.table("orders").select("*").eq("khach_hang_id", khach_hang_id).order("created_at", desc=True).execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        return pd.DataFrame()
+
 def save_full_order(order_data, items_list):
     try:
+        # BƯỚC 1: XỬ LÝ THÔNG TIN KHÁCH HÀNG (CRM)
+        # Trích xuất thông tin từ order_data
+        ten_khach = order_data.get('ten_khach', '')
+        sdt = order_data.get('sdt', '')
+        dia_chi = order_data.get('dia_chi', '')
+        shop = order_data.get('shop', '')
+        
+        khach_id = None
+        if sdt: # Chỉ xử lý nếu có SĐT
+            khach_id = lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop)
+        
+        # Thêm khach_hang_id vào order_data trước khi lưu
+        if khach_id:
+            order_data['khach_hang_id'] = khach_id
+        
+        # BƯỚC 2: TẠO ĐƠN HÀNG
         supabase.table("orders").insert(order_data).execute()
+        
+        # BƯỚC 3: LƯU SẢN PHẨM
         for item in items_list:
             item['order_id'] = order_data['ma_don']
+        
         if items_list:
             supabase.table("order_items").insert(items_list).execute()
+            
+        # BƯỚC 4: CẬP NHẬT TỔNG CHI TIÊU KHÁCH HÀNG
+        if khach_id:
+            try:
+                # Tính tổng tiền đơn vừa tạo
+                tong_tien_don = int(order_data.get('thanh_tien', 0))
+                
+                # Gọi RPC (Stored Procedure) hoặc query lấy tổng cũ
+                # Cách đơn giản: Lấy tổng hiện tại + đơn mới
+                k_res = supabase.table("khach_hang").select("tong_tieu").eq("id", khach_id).single().execute()
+                if k_res.data:
+                    tong_cu = k_res.data.get('tong_tieu', 0) or 0
+                    supabase.table("khach_hang").update({"tong_tieu": tong_cu + tong_tien_don}).eq("id", khach_id).execute()
+            except Exception as e:
+                print(f"⚠️ Lỗi update tổng tiêu: {e}")
+
         return True
     except Exception as e:
         print(f"Lỗi save: {e}")
+        return False
+
+def sync_all_customer_totals():
+    """Đồng bộ lại tổng tiêu, số đơn hàng và địa chỉ cho tất cả khách hàng từ bảng orders"""
+    try:
+        # 1. Lấy tất cả orders
+        all_orders = fetch_all_orders()
+        if all_orders.empty: return False
+        
+        # 2. Group by khach_hang_id
+        # - Sum thanh_tien -> total spent
+        # - Count ma_don -> total orders
+        # - Last dia_chi -> latest address
+        grouped = all_orders.groupby("khach_hang_id").agg({
+            "thanh_tien": "sum",
+            "ma_don": "count",
+            "dia_chi": "last" # Lấy địa chỉ từ đơn mới nhất
+        }).reset_index()
+        
+        # 3. Update từng khách hàng
+        count = 0
+        for _, row in grouped.iterrows():
+            kid = row['khach_hang_id']
+            if pd.isna(kid): continue
+            
+            supabase.table("khach_hang").update({
+                "tong_tieu": int(row['thanh_tien']),
+                "so_don_hang": int(row['ma_don']),
+                "dia_chi": row['dia_chi']
+            }).eq("id", int(kid)).execute()
+            count += 1
+            
+        print(f"Đã đồng bộ {count} khách hàng.")
+        return True
+    except Exception as e:
+        print(f"Lỗi sync: {e}")
         return False
 
 def update_order_status(ma_don, new_status):

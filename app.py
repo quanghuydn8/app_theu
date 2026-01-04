@@ -18,6 +18,7 @@ from modules.ui_components import (
     render_order_management,
     hien_thi_form_tao_don
 )
+from modules.trang_khach_hang import render_customer_page
 
 # ============================================
 # CẤU HÌNH TRANG & CSS
@@ -111,7 +112,7 @@ def main_app():
         
         page = st.radio(
             "Điều hướng",
-            ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "⚙️ Cấu hình"],
+            ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "👥 Quản lý Khách hàng", "⚙️ Cấu hình"],
             index=0
         )
         
@@ -129,6 +130,9 @@ def main_app():
 
     elif page == "📝 Tạo Đơn Mới":
         hien_thi_form_tao_don()
+
+    elif page == "👥 Quản lý Khách hàng":
+        render_customer_page()
 
     elif page == "⚙️ Cấu hình":
         st.title("⚙️ Cấu hình Trạng thái")
