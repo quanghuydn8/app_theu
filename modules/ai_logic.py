@@ -44,12 +44,36 @@ def xuly_ai_gemini(text_input):
            - "Lanh Canh" hoặc "LC" -> shop: "Lanh Canh"
            - Default: "Inside"
         
-        2. OUTPUT JSON FORMAT:
+        2. QUY TẮC TÍNH NGÀY TRẢ HÀNG (ngay_tra):
+           - Bước 1: Kiểm tra xem trong tin nhắn có ghi rõ ngày trả/ngày nhận không?
+             -> Nếu CÓ: Sử dụng ngày đó (định dạng YYYY-MM-DD).
+             -> Nếu KHÔNG: Tính toán tự động dựa trên ngày hôm nay ({today_str}) theo quy tắc sau:
+                + Phân loại sản phẩm trong đơn:
+                  * Loại 1 (Áo): Sweater, Hoodie, Tshirt, Polo, Áo thun, Zip...
+                  * Loại 2 (Quần): Quần short, Quần dài, Jogger...
+                  * Loại 3 (Phụ kiện): Túi, Mũ, Khác...
+                + Logic cộng ngày:
+                  * Trường hợp A: Nếu đơn hàng chỉ chứa 1 Loại sản phẩm duy nhất (Ví dụ: Chỉ toàn Áo, hoặc chỉ toàn Quần) -> Ngày trả = Ngày hôm nay + 12 ngày.
+                  * Trường hợp B: Nếu đơn hàng mix từ 2 Loại trở lên (Ví dụ: Áo + Quần, Áo + Túi, Quần + Túi...) -> Ngày trả = Ngày hôm nay + 22 ngày.
+        3. XÁC ĐỊNH VẬN CHUYỂN & THANH TOÁN (Quan trọng):
+           A. Vận chuyển (van_chuyen):
+              - Nếu thấy "bay", "máy bay", "đường bay" -> "Bay ✈"
+              - Nếu thấy "xe ôm", "grap", "hỏa tốc", "gấp", "nhanh" -> "Xe Ôm 🏍"
+              - Mặc định còn lại -> "Thường"
+           
+           B. Hình thức thanh toán (httt):
+              - Nếu thấy "0đ" -> "0đ 📷"
+              - Mặc định còn lại (hoặc ghi COD, thu hộ) -> "Ship COD 💵"
+        4. XÁC ĐỊNH CO_HEN_NGAY (Quan trọng):
+           - Nếu khách dùng từ: "cần trước ngày", "lấy đúng ngày", "deadline", "gấp", "kịp ngày", "chốt ngày"...
+           -> co_hen_ngay: true
+           - Còn lại (để shop tự tính hoặc thoải mái thời gian) -> co_hen_ngay: false
+        5. OUTPUT JSON FORMAT:
         {{
             "customer_info": {{
                 "ten_khach": "...", "sdt": "...", "dia_chi": "...",
                 "ngay_tra": "YYYY-MM-DD", "shop": "...",
-                "tong_tien": 0, "da_coc": 0, "httt": "...", "van_chuyen": "..."
+                "tong_tien": 0, "da_coc": 0, "httt": "...", "van_chuyen": "...", "co_hen_ngay": false
             }},
             "products": [ {{ "ten_sp": "...", "mau": "...", "size": "...", "kieu_theu": "..." }} ]
         }}
@@ -91,6 +115,7 @@ def xuly_ai_gemini(text_input):
                 "da_coc": int(cust.get("da_coc", 0)),
                 "httt": cust.get("httt", "Ship COD"),
                 "van_chuyen": cust.get("van_chuyen", "Thường"),
+                "co_hen_ngay": cust.get("co_hen_ngay", False),
                 "items": products 
             }, response.text
             
@@ -151,4 +176,41 @@ def gen_anh_mau_theu(image_input_bytes, custom_prompt):
         
     except Exception as e:
         print(f"❌ Lỗi gen ảnh AI: {e}")
+        return None
+
+def generate_image_from_ref(image_bytes, prompt_text):
+    """
+    Tạo ảnh mới dựa trên ảnh gốc và câu lệnh prompt.
+    Sử dụng model gemini-3-pro-image-preview.
+    """
+    if not configure_ai():
+        print("❌ Chưa cấu hình AI")
+        return None
+
+    try:
+        # 1. Cấu hình Model
+        model = genai.GenerativeModel('gemini-3-pro-image-preview')
+        
+        # 2. Xử lý ảnh Input
+        img_input = Image.open(io.BytesIO(image_bytes))
+        
+        # 3. Tạo list content gửi đi
+        content = [prompt_text, img_input]
+        
+        # 4. Generate
+        print(f"🎨 Đang edit ảnh với prompt: {prompt_text}...")
+        response = model.generate_content(content)
+        
+        # 5. Xử lý kết quả trả về
+        if response.candidates:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    print("✅ Generate thành công!")
+                    return part.inline_data.data
+        
+        print("⚠️ Không có dữ liệu ảnh trong response")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Lỗi generate_image_from_ref: {e}")
         return None

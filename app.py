@@ -16,7 +16,8 @@ from modules.data_handler import (
 )
 from modules.ui_components import (
     render_order_management,
-    hien_thi_form_tao_don
+    hien_thi_form_tao_don,
+    render_ai_image_page
 )
 from modules.trang_khach_hang import render_customer_page
 
@@ -112,7 +113,7 @@ def main_app():
         
         page = st.radio(
             "Điều hướng",
-            ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "👥 Quản lý Khách hàng", "⚙️ Cấu hình"],
+            ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "🎨 AI Edit Ảnh", "👥 Quản lý Khách hàng", "⚙️ Cấu hình"],
             index=0
         )
         
@@ -130,6 +131,9 @@ def main_app():
 
     elif page == "📝 Tạo Đơn Mới":
         hien_thi_form_tao_don()
+
+    elif page == "🎨 AI Edit Ảnh":
+        render_ai_image_page()
 
     elif page == "👥 Quản lý Khách hàng":
         render_customer_page()

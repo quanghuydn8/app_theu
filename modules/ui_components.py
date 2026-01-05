@@ -20,7 +20,7 @@ from modules.data_handler import (
     update_order_info,
     lay_danh_sach_khach_hang
 )
-from modules.ai_logic import xuly_ai_gemini, gen_anh_mau_theu
+from modules.ai_logic import xuly_ai_gemini, gen_anh_mau_theu, generate_image_from_ref
 from modules.notifier import send_telegram_notification
 from modules.printer import generate_print_html # Hàm tạo HTML in ấn
 
@@ -169,12 +169,48 @@ def hien_thi_form_tao_don():
                 ai_shop_suggest = "Inside"
                 
             selected_shop = st.selectbox("Shop (Line sản phẩm)", shop_options, index=shop_options.index(ai_shop_suggest))
-            # ------------------------------
+            
+            # --- [MỚI] MAP NGÀY THÁNG TỪ AI ---
+            # Xử lý ngày trả (String -> Datetime)
+            ai_ngay_tra_str = defaults.get("ngay_tra")
+            val_ngay_tra = datetime.now() # Mặc định là hôm nay
+            
+            if ai_ngay_tra_str:
+                try:
+                    # Convert chuỗi "2026-01-20" thành đối tượng datetime
+                    val_ngay_tra = datetime.strptime(ai_ngay_tra_str, "%Y-%m-%d")
+                except:
+                    pass # Nếu lỗi format thì giữ nguyên mặc định
             
             ngay_dat = st.date_input("Ngày đặt", value=datetime.now())
-            ngay_tra = st.date_input("Ngày trả dự kiến", value=datetime.now())
-            httt = st.selectbox("Hình thức thanh toán", ["Ship COD", "Chuyển khoản", "Tiền mặt"])
-            van_chuyen = st.selectbox("Vận chuyển", ["Thường", "Hỏa tốc", "Giao hàng tiết kiệm"])
+            # --- [MỚI] CHECKBOX HẸN NGÀY ---
+            c_date, c_check = st.columns([2, 1])
+            
+            # Lấy giá trị từ AI (True/False)
+            ai_co_hen = defaults.get("co_hen_ngay", False)
+            
+            with c_date:
+                ngay_tra = st.date_input("Ngày trả dự kiến", value=val_ngay_tra)
+            with c_check:
+                st.write("") # Spacer cho thẳng hàng
+                st.write("") 
+                co_hen_ngay = st.checkbox("🚨 Khách hẹn?", value=ai_co_hen, help="Tích vào nếu khách yêu cầu ngày cố định/gấp")
+            
+            # --- [MỚI] MAP THANH TOÁN & VẬN CHUYỂN ---
+            opts_httt = ["Ship COD 💵", "0đ 📷"]
+            opts_vc = ["Thường", "Xe Ôm 🏍", "Bay ✈"]
+            
+            # Lấy giá trị từ AI
+            ai_httt = defaults.get("httt", "Ship COD 💵")
+            ai_vc = defaults.get("van_chuyen", "Thường")
+            
+            # Tìm vị trí (index) trong danh sách options
+            # Nếu AI trả về "Chuyển khoản", nó sẽ tìm thấy index là 1
+            idx_httt = opts_httt.index(ai_httt) if ai_httt in opts_httt else 0
+            idx_vc = opts_vc.index(ai_vc) if ai_vc in opts_vc else 0
+
+            httt = st.selectbox("Hình thức thanh toán", opts_httt, index=idx_httt) # <--- Đã map index
+            van_chuyen = st.selectbox("Vận chuyển", opts_vc, index=idx_vc)         # <--- Đã map index
 
         st.divider()
         st.markdown("#### 📦 Chi tiết sản phẩm")
@@ -221,7 +257,8 @@ def hien_thi_form_tao_don():
                     "httt": httt,
                     "van_chuyen": van_chuyen,
                     "shop": selected_shop,  # <--- LƯU TRƯỜNG SHOP
-                    "trang_thai": "New" 
+                    "trang_thai": "New",
+                    "co_hen_ngay": co_hen_ngay
                 }
 
                 if save_full_order(order_data, items_list):
@@ -273,14 +310,22 @@ def render_order_management(df):
     # Check cột shop
     if not df.empty and 'shop' not in df.columns: df['shop'] = "Inside"
     
-    c_filter1, c_filter2 = st.columns([1, 1])
+    c_filter1, c_filter2, c_filter3 = st.columns([1, 1, 0.5]) # Chia lại cột
+    
     status_filter = c_filter1.multiselect("Lọc trạng thái:", options_status)
-    shop_filter = c_filter2.multiselect("Lọc Shop (Line):", ["TGTĐ", "Inside", "Lanh Canh"])
+    shop_filter = c_filter2.multiselect("Lọc Shop:", ["TGTĐ", "Inside", "Lanh Canh"])
+    
+    # Checkbox lọc đơn hẹn
+    loc_hen_ngay = c_filter3.checkbox("🚨 Chỉ đơn hẹn", value=False)
 
     if not df.empty:
         df_show = df.copy()
         if status_filter: df_show = df_show[df_show['trang_thai'].isin(status_filter)]
         if shop_filter: df_show = df_show[df_show['shop'].isin(shop_filter)]
+        if loc_hen_ngay:
+            # Lọc những dòng co_hen_ngay == True
+            if 'co_hen_ngay' in df_show.columns:
+                df_show = df_show[df_show['co_hen_ngay'] == True]
         
         # Bảng hiển thị tóm tắt
         st.dataframe(
@@ -488,3 +533,63 @@ def render_order_detail_view(ma_don):
                                         if url and update_item_image(item.get('id'), url, "img_sub2"): st.rerun()
             else:
                 st.warning("Đơn này chưa có sản phẩm.")
+
+# ==============================================================================
+# 3. TRANG AI EDIT ẢNH (GEN AI)
+# ==============================================================================
+def render_ai_image_page():
+    st.markdown("<h2 style='text-align: center;'>🎨 AI Edit Ảnh (Beta)</h2>", unsafe_allow_html=True)
+    st.caption("Sử dụng model 'gemini-3-pro-image-preview' để chỉnh sửa ảnh dựa trên Prompt.")
+
+    c_left, c_right = st.columns([1, 2])
+    
+    with c_left:
+        st.info("1. Chọn ảnh gốc (Input Link/Upload)")
+        uploaded_file = st.file_uploader("Upload ảnh gốc", type=['png', 'jpg', 'jpeg'])
+        
+        if uploaded_file:
+            st.image(uploaded_file, caption="Ảnh gốc", use_container_width=True)
+            
+    with c_right:
+        st.info("2. Nhập yêu cầu chỉnh sửa (Prompt)")
+        prompt_input = st.text_area(
+            "Mô tả thay đổi:", 
+            height=150,
+            placeholder="Ví dụ:\n- Đổi màu áo sang màu xanh dương\n- Thêm họa tiết hoa văn lên tay áo\n- Biến đổi thành tranh vẽ chì...",
+            value="đổi màu áo sang màu xanh..."
+        )
+        
+        if st.button("🚀 TẠO ẢNH MỚI (GENERATE)", type="primary", use_container_width=True):
+            if uploaded_file and prompt_input:
+                with st.spinner("AI đang vẽ... (Có thể mất 10-20s)"):
+                    # Gọi hàm xử lý
+                    input_bytes = uploaded_file.getvalue()
+                    result_bytes = generate_image_from_ref(input_bytes, prompt_input)
+                    
+                    if result_bytes:
+                        st.session_state['last_ai_result'] = result_bytes
+                        st.success("✅ Đã tạo ảnh thành công!")
+                    else:
+                        st.error("❌ Không tạo được ảnh. Vui lòng thử lại prompt khác.")
+            else:
+                st.warning("⚠️ Vui lòng upload ảnh và nhập prompt!")
+
+    # HIỂN THỊ KẾT QUẢ (NẾU CÓ)
+    if 'last_ai_result' in st.session_state:
+        st.divider()
+        st.subheader("🖼️ Kết quả AI:")
+        
+        c_res1, c_res2 = st.columns(2)
+        with c_res1:
+            if uploaded_file: st.image(uploaded_file, caption="Ảnh gốc (Original)", use_container_width=True)
+        with c_res2:
+            st.image(st.session_state['last_ai_result'], caption="Ảnh AI (Result)", use_container_width=True)
+            
+            # Download Button
+            st.download_button(
+                label="⬇️ Tải ảnh về máy",
+                data=st.session_state['last_ai_result'],
+                file_name=f"ai_gen_{int(time.time())}.png",
+                mime="image/png",
+                type="primary"
+            )

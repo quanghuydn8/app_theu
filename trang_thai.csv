@@ -1,12 +1,12 @@
 Trạng thái,Màu sắc
 Mới,#808080
-Đã xác nhận,#4CAF50
-Đang thiết kế,#2196F3
-Chờ duyệt thiết kế,#FF9800
-Đã duyệt thiết kế,#4CAF50
+Đã xác nhận (có đầy đủ phiếu sản xuất và đẩy lên trên nobita),#4CAF50
+Đang thiết kế (design đổi qua khi bắt đầu làm),#2196F3
+Chờ duyệt thiết kế (thằng thiết kế chuyển -> đẩy sang mess cho khách check),#FF9800
+Đã duyệt thiết kế (thiết kế chuyển -> KHÔNG gửi sang mess cho khách),#4CAF50
 Đang sản xuất,#9C27B0
-Hoàn thành,#00BCD4
-Đang đóng gói,#FF5722
-Sẵn sàng giao hàng,#8BC34A
+Hoàn thành (khi nobita đổi trạng thái sang đã đối soát),#00BCD4
+"Đổi sửa đền (3 tag: 1 đổi 1, Thu sửa, thu đền, thu đổi ) (có từ khóa để AI nhận về từ fb tự lên đơn đổi sang trạng thái này thay vì mới)",#8BC34A
+,
 Hủy,#FFC107
-Đã gửi vận chuyển,#2E7D32
+Đã gửi vận chuyển (đơn trên nobita đổi tt sang đang luân chuyển thì đổi sang trạng thái này),#2E7D32
