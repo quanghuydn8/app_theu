@@ -1,0 +1,21 @@
+Stt
+Khách hàng
+SĐT
+Người nhận
+Địa chỉ
+Sản phẩm
+Mã sản phẩm
+Số lượng
+Trọng lượng (g)
+Giá
+Giảm giá
+Loại Giảm Giá
+Nội dung để in
+Ghi chú nội bộ
+Trả trước
+Chuyển khoản
+Tiền khách đưa
+Quẹt thẻ
+Phí Vận Chuyển
+Hình thức thanh toán phí vận chuyển
+Nguồn đơn hàng

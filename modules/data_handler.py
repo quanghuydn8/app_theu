@@ -404,3 +404,22 @@ def login_user(email, password):
     except Exception as e:
         print(f"❌ Lỗi đăng nhập: {str(e)}")
         return None
+
+def update_item_field(item_id, field_name, value):
+    """Cập nhật một trường bất kỳ trong bảng order_items"""
+    try:
+        supabase.table("order_items").update({field_name: value}).eq("id", item_id).execute()
+        return True
+    except Exception as e:
+        print(f"❌ Lỗi update item field: {e}")
+        return False
+
+def mark_order_as_printed(ma_don):
+    """Đánh dấu đơn hàng là đã in"""
+    try:
+        # Cập nhật cột da_in thành True
+        supabase.table("orders").update({"da_in": True}).eq("ma_don", ma_don).execute()
+        return True
+    except Exception as e:
+        print(f"Lỗi đánh dấu in: {e}")
+        return False

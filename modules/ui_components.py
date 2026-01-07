@@ -23,12 +23,49 @@ from modules.data_handler import (
     update_item_field,
     mark_order_as_printed,
     STATUS_DONE,
-    STATUS_CANCEL
+    STATUS_CANCEL,
+    supabase
 )
 from modules.ai_logic import xuly_ai_gemini, gen_anh_mau_theu, generate_image_from_ref
 from modules.notifier import send_telegram_notification, check_order_notifications
 from modules.printer import generate_print_html, generate_combined_print_html # Hàm tạo HTML in ấn
 from modules.exporter import export_orders_to_excel
+import base64
+
+# --- HELPER UI COMPONENTS ---
+def hien_thi_anh_vuong(data, label="Ảnh"):
+    if not data:
+        return
+    
+    # Nếu là bytes (ảnh từ AI), convert sang base64
+    if isinstance(data, bytes):
+        try:
+            b64 = base64.b64encode(data).decode()
+            url = f"data:image/png;base64,{b64}"
+        except:
+            return
+    else:
+        url = data
+
+    st.markdown(
+        f"""
+        <div style="
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            background-image: url('{url}');
+            background-size: cover;
+            background-position: center;
+            border-radius: 8px;
+            border: 1px solid #e0e0e0;
+            margin-bottom: 5px;
+            cursor: pointer;
+        " title="{label}"></div>
+        <div style="text-align: center; margin-bottom: 8px;">
+            <a href="{url}" target="_blank" style="text-decoration: none; font-size: 0.8em; color: #555;">🔍 Xem Full</a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 # ==============================================================================
@@ -907,28 +944,6 @@ def render_order_detail_view(ma_don):
         with c_items:
             st.markdown(f"#### 🛒 Sản phẩm ({len(items)}) - {current_shop}")
             
-            # --- [MỚI] HÀM HIỂN THỊ ẢNH VUÔNG (CROP CENTER) ---
-            def hien_thi_anh_vuong(url, label="Ảnh"):
-                if url:
-                    st.markdown(
-                        f"""
-                        <div style="
-                            width: 100%;
-                            aspect-ratio: 1 / 1;
-                            background-image: url('{url}');
-                            background-size: cover;
-                            background-position: center;
-                            border-radius: 8px;
-                            border: 1px solid #e0e0e0;
-                            margin-bottom: 5px;
-                            cursor: pointer;
-                        " title="{label}"></div>
-                        <div style="text-align: center; margin-bottom: 8px;">
-                            <a href="{url}" target="_blank" style="text-decoration: none; font-size: 0.8em; color: #555;">🔍 Xem Full</a>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
 
             # --- 1. CALLBACK CHO 1 FILE ---
             def auto_upload_callback(uploader_key, item_id, file_suffix, db_column):
@@ -1136,55 +1151,88 @@ def render_ai_image_page():
     st.markdown("<h2 style='text-align: center;'>🎨 AI Edit Ảnh (Beta)</h2>", unsafe_allow_html=True)
     st.caption("Sử dụng model 'gemini-3-pro-image-preview' để chỉnh sửa ảnh dựa trên Prompt.")
 
-    c_left, c_right = st.columns([1, 2])
+    # Khởi tạo session state
+    if 'ai_input_bytes' not in st.session_state: st.session_state.ai_input_bytes = None
+    if 'ai_input_url' not in st.session_state: st.session_state.ai_input_url = None
+    if 'ai_result_url' not in st.session_state: st.session_state.ai_result_url = None
+
+    # Layout 3 cột: Gốc | Kết quả | Prompt
+    c_orig, c_res, c_prompt = st.columns([1.2, 1.2, 2.5])
     
-    with c_left:
-        st.info("1. Chọn ảnh gốc (Input Link/Upload)")
-        uploaded_file = st.file_uploader("Upload ảnh gốc", type=['png', 'jpg', 'jpeg'])
+    with c_orig:
+        st.info("📸 1. Ảnh gốc")
         
-        if uploaded_file:
-            st.image(uploaded_file, caption="Ảnh gốc", use_container_width=True)
-            
-    with c_right:
-        st.info("2. Nhập yêu cầu chỉnh sửa (Prompt)")
-        prompt_input = st.text_area(
-            "Mô tả thay đổi:", 
-            height=150,
-            placeholder="Ví dụ:\n- Đổi màu áo sang màu xanh dương\n- Thêm họa tiết hoa văn lên tay áo\n- Biến đổi thành tranh vẽ chì...",
-            value="đổi màu áo sang màu xanh..."
+        # Callback xử lý upload
+        def handle_ai_upload():
+            f = st.session_state.uploader_ai_input
+            if f:
+                # 1. Lưu bytes vào session trước
+                st.session_state.ai_input_bytes = f.getvalue()
+                # 2. Upload lên Supabase để có URL xem full
+                url = upload_image_to_supabase(f, f"ai_input_{int(time.time())}.png", folder="ai_temp")
+                if url:
+                    st.session_state.ai_input_url = url
+
+        uploaded_file = st.file_uploader(
+            "Upload ảnh gốc", 
+            type=['png', 'jpg', 'jpeg'], 
+            label_visibility="collapsed",
+            key="uploader_ai_input",
+            on_change=handle_ai_upload
         )
         
-        if st.button("🚀 TẠO ẢNH MỚI (GENERATE)", type="primary", use_container_width=True):
-            if uploaded_file and prompt_input:
-                with st.spinner("AI đang vẽ... (Có thể mất 10-20s)"):
-                    # Gọi hàm xử lý
-                    input_bytes = uploaded_file.getvalue()
-                    result_bytes = generate_image_from_ref(input_bytes, prompt_input)
+        # Hiển thị ảnh gốc từ URL (chuẩn nhất)
+        if st.session_state.ai_input_url:
+            hien_thi_anh_vuong(st.session_state.ai_input_url, "Ảnh gốc")
+            
+    with c_res:
+        st.info("✨ 2. Kết quả AI")
+        if st.session_state.ai_result_url:
+            hien_thi_anh_vuong(st.session_state.ai_result_url, "Kết quả AI")
+            st.link_button("⬇️ TẢI ẢNH VỀ", st.session_state.ai_result_url, type="primary", use_container_width=True)
+        else:
+            st.markdown(
+                """
+                <div style="width: 100%; aspect-ratio: 1/1; background: #f9f9f9; border: 1px dashed #ccc; border-radius: 8px;
+                            display: flex; align-items: center; justify-content: center; color: #aaa; font-size: 0.9em;">
+                    Chưa có kết quả
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+
+    with c_prompt:
+        st.info("📝 3. Nhập yêu cầu chỉnh sửa (Prompt)")
+        # Dùng session state cho prompt để tránh mất dữ liệu khi rerun
+        if 'ai_prompt_val' not in st.session_state: st.session_state.ai_prompt_val = "đổi màu áo sang màu xanh..."
+        
+        prompt_input = st.text_area(
+            "Mô tả thay đổi:", 
+            height=130,
+            placeholder="Ví dụ: Đổi màu áo sang đỏ...",
+            value=st.session_state.ai_prompt_val,
+            label_visibility="collapsed",
+            key="ai_prompt_area"
+        )
+        
+        if st.button("🚀 XỬ LÝ ẢNH (GENERATE)", type="primary", use_container_width=True):
+            if st.session_state.ai_input_bytes and prompt_input:
+                with st.spinner("AI đang xử lý..."):
+                    # 1. Gọi AI bằng bytes đã lưu trong session
+                    print(f"DEBUG: Processing AI image with {len(st.session_state.ai_input_bytes)} bytes of input data.")
+                    result_bytes = generate_image_from_ref(st.session_state.ai_input_bytes, prompt_input)
                     
                     if result_bytes:
-                        st.session_state['last_ai_result'] = result_bytes
-                        st.success("✅ Đã tạo ảnh thành công!")
+                        print(f"DEBUG: AI generation successful. Result size: {len(result_bytes)} bytes.")
+                        # 2. Upload kết quả lên Supabase
+                        res_url = upload_image_to_supabase(result_bytes, f"ai_res_{int(time.time())}.png", folder="ai_temp")
+                        if res_url:
+                            st.session_state.ai_result_url = res_url
+                            st.success("✅ Thành công!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Lỗi lưu ảnh kết quả.")
                     else:
-                        st.error("❌ Không tạo được ảnh. Vui lòng thử lại prompt khác.")
+                        st.error("❌ AI không trả về ảnh. Hãy thử prompt khác.")
             else:
-                st.warning("⚠️ Vui lòng upload ảnh và nhập prompt!")
-
-    # HIỂN THỊ KẾT QUẢ (NẾU CÓ)
-    if 'last_ai_result' in st.session_state:
-        st.divider()
-        st.subheader("🖼️ Kết quả AI:")
-        
-        c_res1, c_res2 = st.columns(2)
-        with c_res1:
-            if uploaded_file: st.image(uploaded_file, caption="Ảnh gốc (Original)", use_container_width=True)
-        with c_res2:
-            st.image(st.session_state['last_ai_result'], caption="Ảnh AI (Result)", use_container_width=True)
-            
-            # Download Button
-            st.download_button(
-                label="⬇️ Tải ảnh về máy",
-                data=st.session_state['last_ai_result'],
-                file_name=f"ai_gen_{int(time.time())}.png",
-                mime="image/png",
-                type="primary"
-            )
+                st.warning("⚠️ Thiếu ảnh gốc hoặc yêu cầu!")
