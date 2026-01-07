@@ -40,3 +40,21 @@ def send_telegram_notification(message):
         st.toast(f"📡 Lỗi kết nối Telegram: {str(e)}", icon="🌐")
         return False
 
+def check_order_notifications(ma_don, old_tags, new_tags):
+    """
+    Kiểm tra các rule gửi thông báo dựa trên tag
+    1. Chờ phôi -> Hết phôi
+    2. Thiếu file tk -> Thiếu file thiết kế
+    """
+    if not isinstance(old_tags, list): old_tags = []
+    if not isinstance(new_tags, list): new_tags = []
+
+    # Rule 1: "Chờ phôi" (Gửi nếu mới được thêm vào)
+    if "Chờ phôi" in new_tags and "Chờ phôi" not in old_tags:
+        msg = f"⚠️ <b>Đã hết phôi áo của đơn hàng {ma_don}, Xin hãy đặt thêm phôi!</b>"
+        send_telegram_notification(msg)
+
+    # Rule 2: "Thiếu file tk" (Gửi nếu mới được thêm vào)
+    if "Thiếu file tk" in new_tags and "Thiếu file tk" not in old_tags:
+        msg = f"📂 <b>Đơn hàng {ma_don} đang thiếu file thiết kế, hãy kiểm tra!</b>"
+        send_telegram_notification(msg)

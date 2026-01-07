@@ -17,7 +17,24 @@ except Exception as e:
     print(f"❌ Lỗi config Supabase: {e}")
     supabase = None
 
-STATUS_FILE = "trang_thai.csv"
+# DANH SÁCH TRẠNG THÁI CỐ ĐỊNH
+ORDER_STATUSES = [
+    "Mới", "Đã xác nhận", "Chờ sản xuất", "Đang thiết kế", 
+    "Chờ duyệt thiết kế", "Đã duyệt thiết kế", "Đang sản xuất", 
+    "Đổi/sửa/đền", "Đã gửi vận chuyển", "Hoàn thành", "Hủy"
+]
+
+STATUS_DONE = ["Hoàn thành", "Done", "Đã giao", "Completed", "Success"]
+STATUS_CANCEL = ["Đã hủy", "Cancelled", "Hủy", "Fail", "Aborted"]
+
+# DANH SÁCH TAG SẢN XUẤT GỢI Ý
+PRODUCTION_TAGS = [
+    "Thêu",
+    "May",
+    "Chờ phôi",
+    "Chờ thu gom",
+    "Thiếu file tk"
+]
 
 # --- DATABASE FUNCTIONS ---
 
@@ -45,10 +62,10 @@ def get_order_details(ma_don):
     except:
         return None, []
 
-def lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop):
+def lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop, facebook_id=None):
     """
     Kiểm tra SĐT đã tồn tại chưa:
-    - Nếu có: Trả về ID, update thông tin mới.
+    - Nếu có: Trả về ID, update thông tin mới (bao gồm facebook_id nếu có).
     - Nếu chưa: Tạo mới và trả về ID.
     """
     try:
@@ -67,6 +84,9 @@ def lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop):
                 "so_don_hang": so_don_cu + 1,
                 "nguon_shop": shop   # Cập nhật shop gần nhất
             }
+            if facebook_id:
+                update_data["facebook_id"] = facebook_id
+                
             supabase.table("khach_hang").update(update_data).eq("id", khach_id).execute()
             return khach_id
             
@@ -79,6 +99,9 @@ def lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop):
                 "nguon_shop": shop,
                 "so_don_hang": 1
             }
+            if facebook_id:
+                new_customer["facebook_id"] = facebook_id
+                
             res = supabase.table("khach_hang").insert(new_customer).execute()
             if res.data:
                 return res.data[0]['id']
@@ -119,10 +142,11 @@ def save_full_order(order_data, items_list):
         sdt = order_data.get('sdt', '')
         dia_chi = order_data.get('dia_chi', '')
         shop = order_data.get('shop', '')
+        facebook_id = order_data.get('facebook_id', None) # Lấy facebook_id từ order_data
         
         khach_id = None
         if sdt: # Chỉ xử lý nếu có SĐT
-            khach_id = lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop)
+            khach_id = lay_hoac_tao_khach_hang(ten_khach, sdt, dia_chi, shop, facebook_id)
         
         # Thêm khach_hang_id vào order_data trước khi lưu
         if khach_id:
@@ -204,13 +228,8 @@ def update_order_status(ma_don, new_status):
 # --- CONFIG HELPERS ---
 
 def tai_danh_sach_trang_thai():
-    if os.path.exists(STATUS_FILE):
-        return pd.read_csv(STATUS_FILE)
-    return pd.DataFrame({"Trạng thái": ["New", "Hoàn thành"], "Màu sắc": ["#808080", "#4CAF50"]})
+    return pd.DataFrame({"Trạng thái": ORDER_STATUSES})
 
-def luu_danh_sach_trang_thai(df):
-    df.to_csv(STATUS_FILE, index=False)
-    return True
 
 # --- CLOUD STORAGE FUNCTIONS (NEW) ---
 

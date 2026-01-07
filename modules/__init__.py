@@ -8,7 +8,6 @@ from .data_handler import (
     save_full_order,
     update_order_status,
     tai_danh_sach_trang_thai,
-    luu_danh_sach_trang_thai,
     upload_image_to_supabase, # <--- Hàm mới
     update_item_image,        # <--- Hàm mới
     update_item_field,
@@ -29,6 +28,6 @@ from .ai_logic import (
 )
 
 # 4. Export hàm thông báo
-from .notifier import send_telegram_notification
+from .notifier import send_telegram_notification, check_order_notifications
 
 from .printer import generate_print_html

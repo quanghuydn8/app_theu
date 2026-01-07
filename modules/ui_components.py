@@ -21,22 +21,15 @@ from modules.data_handler import (
     update_order_info,
     lay_danh_sach_khach_hang,
     update_item_field,
-    mark_order_as_printed
+    mark_order_as_printed,
+    STATUS_DONE,
+    STATUS_CANCEL
 )
 from modules.ai_logic import xuly_ai_gemini, gen_anh_mau_theu, generate_image_from_ref
-from modules.notifier import send_telegram_notification
+from modules.notifier import send_telegram_notification, check_order_notifications
 from modules.printer import generate_print_html, generate_combined_print_html # Hàm tạo HTML in ấn
 from modules.exporter import export_orders_to_excel
 
-# --- HELPER FUNCTIONS ---
-def get_status_color_map():
-    df_status = tai_danh_sach_trang_thai()
-    return dict(zip(df_status["Trạng thái"], df_status["Màu sắc"]))
-
-def tao_badge_trang_thai(trang_thai):
-    mau_sac_map = get_status_color_map()
-    color = mau_sac_map.get(trang_thai, "#808080")
-    return f'<span style="background-color: {color}; color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 600;">{trang_thai}</span>'
 
 # ==============================================================================
 # 1. FORM TẠO ĐƠN HÀNG (AUTO FILL SHOP)
@@ -271,8 +264,8 @@ def hien_thi_form_tao_don():
 
                 if save_full_order(order_data, items_list):
                     st.success(f"✅ Đã lưu đơn {final_ma_don}!")
-                    msg = f"🚀 <b>ĐƠN MỚI ({selected_shop}): {final_ma_don}</b>\nKhách: {ten_khach}\nTổng: {thanh_tien:,.0f}đ"
-                    send_telegram_notification(msg)
+                    # Bỏ rule gửi thông báo đơn mới. 
+                    # check_order_notifications(final_ma_don, [], []) # Không có tag khi tạo đơn
                     st.session_state.ai_order_data = {}
                     st.session_state.temp_items = [{"ten_sp": "", "mau": "", "size": "", "kieu_theu": "", "thong_tin_phu": ""}]
                     time.sleep(1)
@@ -295,8 +288,6 @@ def render_order_management(df):
             final_html = html_c + "<script>window.addEventListener('load', function() { setTimeout(function() { window.print(); }, 500); });</script>"
             components.html(final_html, height=800, scrolling=True)
         show_bulk_auto_print(b_html)
-    STATUS_DONE = ['Hoàn thành', 'Done', 'Đã giao', 'Completed', 'Success']
-    STATUS_CANCEL = ['Đã hủy', 'Cancelled', 'Hủy', 'Fail', 'Aborted']
     IGNORE_STATUSES = STATUS_DONE + STATUS_CANCEL 
 
     if not df.empty:
@@ -322,7 +313,7 @@ def render_order_management(df):
     # =================================================================================
     # 2. KHU VỰC ĐIỀU KHIỂN: NHẮC VIỆC (TRÁI) - BỘ LỌC (PHẢI)
     # =================================================================================
-    c_control_left, c_control_right = st.columns([1, 1], gap="medium")
+    c_control_left, c_control_right = st.columns([1, 2], gap="medium")
 
     # --- BOX TRÁI: NHẮC VIỆC ---
     with c_control_left:
@@ -384,10 +375,13 @@ def render_order_management(df):
             df_status = tai_danh_sach_trang_thai()
             options_status = df_status["Trạng thái"].tolist()
             
-            # Hàng 1: Trạng thái & Shop
-            c_f1, c_f2 = st.columns([2, 1])
+            # Hàng 1: Trạng thái, Tag & Shop
+            from modules.data_handler import PRODUCTION_TAGS
+            c_f1, c_f_tag, c_f2 = st.columns([1.5, 1.5, 1])
             with c_f1:
                 status_filter = st.multiselect("Trạng thái:", options_status, placeholder="Chọn trạng thái...")
+            with c_f_tag:
+                tag_filter = st.multiselect("Nhãn (Tags):", PRODUCTION_TAGS, placeholder="Chọn Nhãn...")
             with c_f2:
                 shop_filter = st.multiselect("Shop:", ["TGTĐ", "Inside", "Lanh Canh"], placeholder="Chọn Shop")
             
@@ -414,6 +408,16 @@ def render_order_management(df):
         df_show = df.copy()
         
         if status_filter: df_show = df_show[df_show['trang_thai'].isin(status_filter)]
+        if tag_filter:
+            # Lọc các đơn có chứa ít nhất 1 trong các tag được chọn
+            def check_tag_match(order_tags):
+                if not order_tags: return False
+                # Nếu order_tags là string (phòng lỗi), convert về list
+                if isinstance(order_tags, str): return any(x in order_tags for x in tag_filter)
+                return any(x in order_tags for x in tag_filter)
+            
+            df_show = df_show[df_show['tags'].apply(check_tag_match)]
+            
         if shop_filter: df_show = df_show[df_show['shop'].isin(shop_filter)]
         if loc_hen_ngay and 'co_hen_ngay' in df_show.columns:
             df_show = df_show[df_show['co_hen_ngay'] == True]
@@ -513,7 +517,14 @@ def render_order_management(df):
             df_show['display_ma_don'] = df_show['ma_don']
 
         # Render
-        cols_to_show = ["display_ma_don", "ten_khach", "shop", "deadline", "thanh_tien", "trang_thai"]
+        def get_display_tags(tags):
+            if not tags: return ""
+            if isinstance(tags, str): return tags
+            return ", ".join([str(t) for t in tags if t])
+
+        df_show['display_tags'] = df_show['tags'].apply(get_display_tags)
+        
+        cols_to_show = ["display_ma_don", "display_tags", "ten_khach", "shop", "deadline", "thanh_tien", "trang_thai"]
         valid_cols = [c for c in cols_to_show if c in df_show.columns]
         df_display = df_show[valid_cols].reset_index(drop=True)
 
@@ -533,7 +544,8 @@ def render_order_management(df):
             use_container_width=True,
             hide_index=True,
             column_config={
-                "display_ma_don": st.column_config.TextColumn("Mã đơn hàng", width="medium"),
+                "display_ma_don": st.column_config.TextColumn("Mã đơn hàng", width="small"),
+                "display_tags": st.column_config.TextColumn("Nhãn", width="medium"),
                 "thanh_tien": st.column_config.NumberColumn("Thành tiền", format="%d đ"),
                 "deadline": st.column_config.TextColumn("Hạn chót", width="medium"),
                 "shop": st.column_config.TextColumn("Shop", width="small"),
@@ -563,35 +575,52 @@ def render_order_management(df):
                 else:
                     try:
                         selected_rows = df_display.iloc[selected_indices]
-                        selected_ma_don = []
-                        for _, row in selected_rows.iterrows():
-                            raw_ma = str(row['display_ma_don'])
-                            if "🖨️" in raw_ma: raw_ma = raw_ma.replace("🖨️", "").strip()
-                            selected_ma_don.append(raw_ma)
                         
-                        if selected_ma_don:
-                            orders_data_list = []
-                            from modules.data_handler import get_order_details
-                            with st.spinner(f"Xử lý {len(selected_ma_don)} đơn..."):
-                                for ma in selected_ma_don:
-                                    # KHÔNG update DB ở đây nữa
-                                    o_info, o_items = get_order_details(ma)
-                                    if o_info: orders_data_list.append({"order_info": o_info, "items": o_items})
+                        # --- KIỂM TRA QUYỀN IN HÀNG LOẠT ---
+                        invalid_list = []
+                        for _, row in selected_rows.iterrows():
+                            o_ma = str(row['display_ma_don']).replace("🖨️", "").strip()
+                            o_shop = row['shop']
+                            o_stt = row['trang_thai']
                             
-                            if orders_data_list:
-                                combined_html = generate_combined_print_html(orders_data_list)
-                                @st.dialog("🖨️ Xem trước bản in (Gộp)", width="large")
-                                def show_combined_print_preview(html_content, ma_list):
-                                    st.caption("Kiểm tra kỹ các đơn trước khi bấm xác nhận.")
-                                    if st.button("🚀 XÁC NHẬN & IN TẤT CẢ", type="primary", use_container_width=True):
-                                        from modules.data_handler import mark_order_as_printed
-                                        with st.spinner("Đang cập nhật trạng thái..."):
-                                            for m in ma_list:
-                                                mark_order_as_printed(m)
-                                        st.session_state["print_bulk_html"] = html_content
-                                        st.rerun()
-                                    components.html(html_content, height=800, scrolling=True)
-                                show_combined_print_preview(combined_html, selected_ma_don)
+                            if o_shop == "Lanh Canh":
+                                if o_stt in ["Mới", "Đã xác nhận", "New"]:
+                                    invalid_list.append(f"{o_ma} (Lanh Canh - {o_stt})")
+                            else:
+                                if o_stt in ["Mới", "Đã xác nhận", "Chờ sản xuất", "Đang thiết kế", "Chờ duyệt thiết kế", "New"]:
+                                    invalid_list.append(f"{o_ma} ({o_shop} - {o_stt})")
+
+                        if invalid_list:
+                            st.error(f"⚠️ Có {len(invalid_list)} đơn chưa đủ điều kiện in:\n" + "\n".join([f"- {i}" for i in invalid_list]))
+                        else:
+                            selected_ma_don = []
+                            for _, row in selected_rows.iterrows():
+                                raw_ma = str(row['display_ma_don'])
+                                if "🖨️" in raw_ma: raw_ma = raw_ma.replace("🖨️", "").strip()
+                                selected_ma_don.append(raw_ma)
+                            
+                            if selected_ma_don:
+                                orders_data_list = []
+                                from modules.data_handler import get_order_details
+                                with st.spinner(f"Xử lý {len(selected_ma_don)} đơn..."):
+                                    for ma in selected_ma_don:
+                                        o_info, o_items = get_order_details(ma)
+                                        if o_info: orders_data_list.append({"order_info": o_info, "items": o_items})
+                                
+                                if orders_data_list:
+                                    combined_html = generate_combined_print_html(orders_data_list)
+                                    @st.dialog("🖨️ Xem trước bản in (Gộp)", width="large")
+                                    def show_combined_print_preview(html_content, ma_list):
+                                        st.caption("Kiểm tra kỹ các đơn trước khi bấm xác nhận.")
+                                        if st.button("🚀 XÁC NHẬN & IN TẤT CẢ", type="primary", use_container_width=True):
+                                            from modules.data_handler import mark_order_as_printed
+                                            with st.spinner("Đang cập nhật trạng thái..."):
+                                                for m in ma_list:
+                                                    mark_order_as_printed(m)
+                                            st.session_state["print_bulk_html"] = html_content
+                                            st.rerun()
+                                        components.html(html_content, height=800, scrolling=True)
+                                    show_combined_print_preview(combined_html, selected_ma_don)
                     except Exception as e: st.error(f"Lỗi: {e}")
 
         with c_btn_excel:
@@ -613,10 +642,17 @@ def render_order_management(df):
                             from modules.data_handler import get_order_details
                             with st.spinner("Đang tạo..."):
                                 for ma in selected_ma_don_ex:
-                                    # Không đánh dấu đã in khi xuất excel
                                     o_info, o_items = get_order_details(ma)
                                     if o_info: orders_data_ex.append({"order_info": o_info, "items": o_items})
-                            
+                                    
+                                    # --- LOGIC AUTOMATION: Xuất Excel -> Chờ sản xuất ---
+                                    # Chỉ update nếu đơn đang ở trạng thái trước đó (Mới, Đã xác nhận) để tránh revert đơn đã làm
+                                    current_st_ex = o_info.get('trang_thai', '')
+                                    allow_auto_update_ex = ["Mới", "Đã xác nhận", "New"]
+                                    if current_st_ex in allow_auto_update_ex:
+                                        from modules.data_handler import update_order_info
+                                        update_order_info(ma, {"trang_thai": "Chờ sản xuất"})
+
                             if orders_data_ex:
                                 excel_buffer = export_orders_to_excel(orders_data_ex)
                                 f_name = f"Excel_Nobita_{datetime.now().strftime('%d.%m')}.xlsx"
@@ -719,27 +755,71 @@ def render_order_detail_view(ma_don):
                 new_coc = st.number_input("Đã cọc", value=float(order_info.get('da_coc', 0)), step=10000.0, format="%.0f")
                 st.caption(f"Còn lại: {new_tong - new_coc:,.0f} đ")
                 
-                # Trạng thái
                 st.markdown("---")
+                
+                # Load danh sách trạng thái & tags chuẩn từ data_handler
+                # (Lưu ý: Bạn phải chắc chắn đã thêm PRODUCTION_TAGS vào data_handler.py như hướng dẫn trước)
+                from modules.data_handler import PRODUCTION_TAGS 
+                
                 df_status = tai_danh_sach_trang_thai()
                 options_status = df_status["Trạng thái"].tolist()
-                
                 current_st = order_info.get('trang_thai', 'New')
                 if current_st not in options_status: options_status.append(current_st)
                 new_trang_thai = st.selectbox("Trạng thái", options_status, index=options_status.index(current_st))
+                    
+                # Lấy danh sách tags hiện tại từ DB (nếu chưa có thì là list rỗng)
+                current_tags = order_info.get('tags') or []
+                # Ép kiểu về list nếu lỡ DB lưu dạng string (phòng lỗi)
+                if isinstance(current_tags, str): current_tags = []
+                
+                # Gộp danh sách gợi ý + danh sách hiện có (để không bị mất các tag lạ)
+                all_tag_options = list(set(PRODUCTION_TAGS + current_tags))
+                
+                new_tags = st.multiselect(
+                    "Nhãn / Lưu ý (Tags)",
+                    options=all_tag_options,
+                    default=current_tags,
+                    placeholder="Chọn nhãn..."
+                )
                 
                 new_ghi_chu = st.text_input("Ghi chú đặc biệt", value=order_info.get('ghi_chu', ''))
+                
+                # --- NEW: Facebook ID ---
+                current_fb_id = "" # TODO: Cần lấy từ bảng khach_hang, nhưng hiện tại trong order_info chưa join bảng khách.
+                # Tạm thời field này để manual update nếu cần, hoặc chờ backend update order_info join khach_hang
+                # new_fb_id = st.text_input("Facebook ID (Messenger)", value=current_fb_id, placeholder="ID dạng số...")
 
-                # Nút Lưu Info
-                if st.form_submit_button("💾 Lưu thông tin", type="primary"):
+                # Nút hành động
+                col_btn_1, col_btn_2 = st.columns(2)
+                with col_btn_1:
+                    is_new = current_st in ["Mới", "Đổi/sửa/đền"]
+                    btn_confirm = st.form_submit_button("✅ Xác nhận đơn", use_container_width=True, disabled=not is_new)
+                with col_btn_2:
+                    btn_save = st.form_submit_button("💾 Lưu thông tin", type="primary", use_container_width=True)
+
+                if btn_confirm or btn_save:
+                    # Nếu bấm Xác nhận đơn -> auto chuyển trạng thái
+                    final_status = "Đã xác nhận" if btn_confirm else new_trang_thai
+                    
                     update_data = {
                         "shop": new_shop, "ten_khach": new_ten, "sdt": new_sdt, 
                         "dia_chi": new_dia_chi, "ngay_dat": new_ngay_dat.isoformat(), 
                         "ngay_tra": new_ngay_tra.isoformat(), "thanh_tien": new_tong, 
-                        "da_coc": new_coc, "con_lai": new_tong - new_coc, "trang_thai": new_trang_thai,
-                        "ghi_chu": new_ghi_chu
+                        "da_coc": new_coc, "con_lai": new_tong - new_coc, "trang_thai": final_status,
+                        "ghi_chu": new_ghi_chu,
+                        "tags": new_tags
                     }
+                    
+                    # --- LOGIC AUTOMATION: Trigger Webhook nếu trạng thái là Chờ duyệt thiết kế ---
+                    if new_trang_thai == "Chờ duyệt thiết kế" and current_st != "Chờ duyệt thiết kế":
+                        st.toast("🚀 Đang gửi thông báo bản thiết kế cho khách...", icon="📨")
+                        # TODO: Call webhook function here
+                        # trigger_webhook_design_approval(order_info)
+
                     if update_order_info(ma_don, update_data):
+                        # --- GỬI THÔNG BÁO THEO TAG MỚI ---
+                        check_order_notifications(ma_don, current_tags, new_tags)
+                        
                         st.success("Đã cập nhật!"); time.sleep(0.5); st.rerun()
 
             # --- NÚT IN PHIẾU (Đã cập nhật logic Đã In) ---
@@ -769,7 +849,41 @@ def render_order_detail_view(ma_don):
                 show_auto_print_dialog(p_html)
 
             # Nút mở preview thường
-            if st.button("🖨️ XEM & IN PHIẾU", use_container_width=True, key=f"btn_print_{ma_don}"):
+            # --- LOGIC PERMISSION IN ---
+            def check_print_permission(order):
+                shp = order.get('shop', 'Inside')
+                stt = order.get('trang_thai', '')
+                
+                # Danh sách trạng thái theo thứ tự process
+                # Mới -> Đã xác nhận -> Chờ sản xuất -> Đang thiết kế -> Chờ duyệt thiết kế -> Đã duyệt thiết kế -> Đang sản xuất -> ...
+                
+                allow = False
+                msg = ""
+                
+                if shp == "Lanh Canh":
+                    # Lanh canh: Chờ sản xuất trở đi là được in
+                    # Các trạng thái KHÔNG được in: Mới, Đã xác nhận
+                    lbl_block = ["Mới", "Đã xác nhận", "New"]
+                    if stt in lbl_block:
+                        allow = False
+                        msg = f"Đơn Lanh Canh phải từ 'Chờ sản xuất'. Trạng thái hiện tại: {stt}"
+                    else:
+                        allow = True
+                else: 
+                    # TGTĐ / Inside: Đã duyệt thiết kế trở đi
+                    # Các trạng thái KHÔNG được in: Mới, Đã xác nhận, Chờ sản xuất, Đang thiết kế, Chờ duyệt thiết kế
+                    lbl_block = ["Mới", "Đã xác nhận", "Chờ sản xuất", "Đang thiết kế", "Chờ duyệt thiết kế", "New"]
+                    if stt in lbl_block:
+                        allow = False
+                        msg = f"Đơn Design phải từ 'Đã duyệt thiết kế'. Trạng thái hiện tại: {stt}"
+                    else:
+                        allow = True
+                
+                return allow, msg
+
+            can_print, msg_print = check_print_permission(order_info)
+
+            if st.button("🖨️ XEM & IN PHIẾU", use_container_width=True, key=f"btn_print_{ma_don}", disabled=not can_print, help=None if can_print else msg_print):
                 html_content = generate_print_html(order_info, items)
                 
                 @st.dialog("🖨️ Xem trước bản in", width="large")
@@ -904,6 +1018,12 @@ def render_order_detail_view(ma_don):
                                 st.file_uploader("Up Phụ 2", key=k_in_sub2, label_visibility="collapsed",
                                                  on_change=auto_upload_callback,
                                                  args=(k_in_sub2, item.get('id'), "sub2", "img_design"))
+                                
+                                # --- NÚT GỬI DUYỆT (INSIDE) ---
+                                can_approve = order_info.get('trang_thai') == "Đang thiết kế"
+                                if st.button("🚀 Gửi duyệt", key=f"btn_send_approval_in_{item.get('id')}", use_container_width=True, disabled=not can_approve):
+                                    if update_order_info(ma_don, {"trang_thai": "Chờ duyệt thiết kế"}):
+                                        st.success("Đã chuyển sang Chờ duyệt thiết kế!"); time.sleep(0.5); st.rerun()
 
                         # =========================================================
                         # CASE 3: TGTĐ (VÀ MẶC ĐỊNH)
@@ -953,6 +1073,12 @@ def render_order_detail_view(ma_don):
                                 st.file_uploader("Up Design", key=k_des, label_visibility="collapsed",
                                                  on_change=auto_upload_callback,
                                                  args=(k_des, item.get('id'), "design", "img_design"))
+                                
+                                # --- NÚT GỬI DUYỆT (CHỈ TGTĐ/INSIDE) ---
+                                can_approve = order_info.get('trang_thai') == "Đang thiết kế"
+                                if st.button("🚀 Gửi duyệt", key=f"btn_send_approval_{item.get('id')}", use_container_width=True, disabled=not can_approve):
+                                    if update_order_info(ma_don, {"trang_thai": "Chờ duyệt thiết kế"}):
+                                        st.success("Đã chuyển sang Chờ duyệt thiết kế!"); time.sleep(0.5); st.rerun()
 
                             with cols[4]:
                                 st.write("4️⃣ File Thêu")
@@ -982,7 +1108,9 @@ def render_order_detail_view(ma_don):
                             if st.button("💾 Lưu Note", key=f"btn_save_fix_{item.get('id')}"):
                                 from modules.data_handler import update_item_field 
                                 if update_item_field(item.get('id'), "yeu_cau_sua", new_note):
-                                    st.rerun()
+                                    # --- AUTO CHUYỂN TRẠNG THÁI ---
+                                    update_order_info(ma_don, {"trang_thai": "Chờ sản xuất"})
+                                    st.success("Đã lưu note và chuyển đơn sang Chờ sản xuất!"); time.sleep(0.5); st.rerun()
                         
                         with c_fix2:
                             st.caption("Ảnh feedback 1")

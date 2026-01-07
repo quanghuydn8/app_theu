@@ -11,7 +11,6 @@ from modules.data_handler import (
     fetch_all_orders,
     kiem_tra_ket_noi,
     tai_danh_sach_trang_thai,
-    luu_danh_sach_trang_thai,
     login_user  # <--- Import hàm Login mới
 )
 from modules.ui_components import (
@@ -113,7 +112,7 @@ def main_app():
         
         page = st.radio(
             "Điều hướng",
-            ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "🎨 AI Edit Ảnh", "👥 Quản lý Khách hàng", "⚙️ Cấu hình"],
+            ["📊 Quản lý Đơn hàng", "📝 Tạo Đơn Mới", "🎨 AI Edit Ảnh", "👥 Quản lý Khách hàng"],
             index=0
         )
         
@@ -137,16 +136,6 @@ def main_app():
 
     elif page == "👥 Quản lý Khách hàng":
         render_customer_page()
-
-    elif page == "⚙️ Cấu hình":
-        st.title("⚙️ Cấu hình Trạng thái")
-        df_status = tai_danh_sach_trang_thai()
-        edited_df = st.data_editor(df_status, num_rows="dynamic", use_container_width=True)
-        
-        if st.button("💾 Lưu Cấu Hình", type="primary"):
-            if luu_danh_sach_trang_thai(edited_df):
-                st.success("✅ Đã lưu cấu hình!")
-                st.cache_data.clear()
 
 # ============================================
 # ĐIỀU PHỐI (CONTROLLER)
