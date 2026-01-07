@@ -1,38 +1,11 @@
 import streamlit as st
 
-def generate_print_html(order_info, items):
+def _get_single_order_body(order_info, items):
     """
-    Hàm tạo mã HTML để in phiếu sản xuất (Work Order).
-    Tự động chọn mẫu in dựa trên loại Shop.
+    Hàm helper: Tạo nội dung HTML body cho 1 đơn hàng (không bao gồm thẻ html/head/body bọc ngoài)
     """
     shop_type = order_info.get('shop', 'Inside')
     
-    # CSS CHUNG CHO TRANG IN (Khổ A4)
-    css_style = """
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
-        body { font-family: 'Roboto', sans-serif; font-size: 14px; color: #000; }
-        .print-container { width: 100%; max-width: 800px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; }
-        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
-        .brand { font-size: 24px; font-weight: bold; text-transform: uppercase; }
-        .meta { text-align: right; }
-        .customer-box { border: 1px solid #000; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
-        .item-row { display: flex; border-bottom: 1px dashed #999; padding: 15px 0; page-break-inside: avoid; }
-        .item-info { width: 30%; padding-right: 10px; }
-        .item-images { width: 70%; display: flex; gap: 10px; }
-        .img-box { border: 1px solid #ccc; width: 32%; text-align: center; }
-        .img-box img { max-width: 100%; max-height: 150px; object-fit: contain; }
-        .label { font-weight: bold; font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
-        .note { color: red; font-weight: bold; margin-top: 5px; }
-        
-        /* Chỉ hiện nút in trên màn hình, ẩn khi in ra giấy */
-        @media print {
-            .no-print { display: none !important; }
-            .print-container { border: none; padding: 0; }
-        }
-    </style>
-    """
-
     # --- LOGIC TẠO HTML THEO SHOP ---
     
     # 1. TEMPLATE TGTĐ (Form nhiều ảnh chi tiết)
@@ -116,40 +89,104 @@ def generate_print_html(order_info, items):
             </div>
             """
 
-    # --- GHÉP KHUNG HTML TỔNG ---
+    # --- KHUNG NỘI DUNG ĐƠN HÀNG ---
+    single_order_html = f"""
+    <div class="print-container">
+        <div class="header">
+            <div class="brand">PHIẾU SẢN XUẤT - {shop_type}</div>
+            <div class="meta">
+                <div>Mã đơn: <b>{order_info.get('ma_don')}</b></div>
+                <div>Ngày in: {order_info.get('ngay_dat')[:10]}</div>
+            </div>
+        </div>
+
+        <div class="customer-box">
+            <div>Khách hàng: <b>{order_info.get('ten_khach')}</b> - {order_info.get('sdt')}</div>
+            <div>Địa chỉ: {order_info.get('dia_chi')}</div>
+            <div>Giao hàng: <b>{order_info.get('van_chuyen')}</b> | Thu hộ (COD): <b>{float(order_info.get('con_lai', 0)):,.0f} đ</b></div>
+        </div>
+
+        <div class="items-list">
+            {items_html}
+        </div>
+        
+        <div style="margin-top:30px; border-top:2px solid #000; padding-top:10px; display:flex; justify-content:space-between;">
+            <div><b>Người kiểm hàng</b><br><br><br></div>
+            <div><b>Thợ nhận việc</b><br><br><br></div>
+        </div>
+    </div>
+    """
+    return single_order_html
+
+def _get_css():
+    return """
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+        body { font-family: 'Roboto', sans-serif; font-size: 14px; color: #000; margin: 0; padding: 0; }
+        .print-container { width: 100%; max-width: 800px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; }
+        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }
+        .brand { font-size: 24px; font-weight: bold; text-transform: uppercase; }
+        .meta { text-align: right; }
+        .customer-box { border: 1px solid #000; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+        .item-row { display: flex; border-bottom: 1px dashed #999; padding: 15px 0; page-break-inside: avoid; }
+        .item-info { width: 30%; padding-right: 10px; }
+        .item-images { width: 70%; display: flex; gap: 10px; }
+        .img-box { border: 1px solid #ccc; width: 32%; text-align: center; }
+        .img-box img { max-width: 100%; max-height: 150px; object-fit: contain; }
+        .label { font-weight: bold; font-size: 12px; color: #555; display: block; margin-bottom: 4px; }
+        .note { color: red; font-weight: bold; margin-top: 5px; }
+        
+        /* Chỉ hiện nút in trên màn hình, ẩn khi in ra giấy */
+        @media print {
+            .no-print { display: none !important; }
+            .print-container { border: none; padding: 0; max-width: 100%; width: 100%; }
+            .page-break { page-break-before: always; }
+        }
+    </style>
+    """
+
+def generate_print_html(order_info, items):
+    """
+    Hàm tạo mã HTML để in phiếu sản xuất (Work Order) cho 1 đơn hàng.
+    """
+    body_content = _get_single_order_body(order_info, items)
+    
     full_html = f"""
     <!DOCTYPE html>
     <html>
-    <head>{css_style}</head>
+    <head>{_get_css()}</head>
     <body>
-        <div class="print-container">
-            <div class="no-print" style="text-align:right; margin-bottom:10px;">
-                <button onclick="window.print()" style="background-color:#2563eb; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ IN PHIẾU NGAY</button>
-            </div>
-
-            <div class="header">
-                <div class="brand">PHIẾU SẢN XUẤT - {shop_type}</div>
-                <div class="meta">
-                    <div>Mã đơn: <b>{order_info.get('ma_don')}</b></div>
-                    <div>Ngày in: {order_info.get('ngay_dat')[:10]}</div>
-                </div>
-            </div>
-
-            <div class="customer-box">
-                <div>Khách hàng: <b>{order_info.get('ten_khach')}</b> - {order_info.get('sdt')}</div>
-                <div>Địa chỉ: {order_info.get('dia_chi')}</div>
-                <div>Giao hàng: <b>{order_info.get('van_chuyen')}</b> | Thu hộ (COD): <b>{float(order_info.get('con_lai', 0)):,.0f} đ</b></div>
-            </div>
-
-            <div class="items-list">
-                {items_html}
-            </div>
-            
-            <div style="margin-top:30px; border-top:2px solid #000; padding-top:10px; display:flex; justify-content:space-between;">
-                <div><b>Người kiểm hàng</b><br><br><br></div>
-                <div><b>Thợ nhận việc</b><br><br><br></div>
-            </div>
+        <div class="no-print" style="position: fixed; top: 10px; right: 10px; z-index: 9999;">
+            <button onclick="window.print()" style="background-color:#2563eb; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ IN PHIẾU NGAY</button>
         </div>
+        {body_content}
+    </body>
+    </html>
+    """
+    return full_html
+
+def generate_combined_print_html(orders_data_list):
+    """
+    Hàm tạo mã HTML để in GỘP nhiều đơn hàng.
+    orders_data_list: list các dict [{'order_info': ..., 'items': ...}, ...]
+    """
+    all_bodies = ""
+    for idx, data in enumerate(orders_data_list):
+        # Thêm page-break trước mỗi đơn (trừ đơn đầu tiên)
+        if idx > 0:
+            all_bodies += '<div class="page-break"></div>'
+            
+        all_bodies += _get_single_order_body(data['order_info'], data['items'])
+        
+    full_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>{_get_css()}</head>
+    <body>
+        <div class="no-print" style="position: fixed; top: 10px; right: 10px; z-index: 9999;">
+            <button onclick="window.print()" style="background-color:#2563eb; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ IN (TẤT CẢ)</button>
+        </div>
+        {all_bodies}
     </body>
     </html>
     """

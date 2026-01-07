@@ -6,6 +6,7 @@ import requests
 import io
 import streamlit.components.v1 as components # Thư viện để hiện khung in
 
+
 # Import từ các module khác
 from modules.data_handler import (
     fetch_all_orders,
@@ -18,11 +19,14 @@ from modules.data_handler import (
     kiem_tra_ket_noi,
     upload_multiple_files_to_supabase,
     update_order_info,
-    lay_danh_sach_khach_hang
+    lay_danh_sach_khach_hang,
+    update_item_field,
+    mark_order_as_printed
 )
 from modules.ai_logic import xuly_ai_gemini, gen_anh_mau_theu, generate_image_from_ref
 from modules.notifier import send_telegram_notification
-from modules.printer import generate_print_html # Hàm tạo HTML in ấn
+from modules.printer import generate_print_html, generate_combined_print_html # Hàm tạo HTML in ấn
+from modules.exporter import export_orders_to_excel
 
 # --- HELPER FUNCTIONS ---
 def get_status_color_map():
@@ -139,16 +143,16 @@ def hien_thi_form_tao_don():
         on_change=on_quick_select
     )
 
-    # --- FORM NHẬP LIỆU CHÍNH ---
+# --- FORM NHẬP LIỆU CHÍNH ---
     defaults = st.session_state.ai_order_data
     
     with st.form("form_tao_don_chinh"):
         c1, c2 = st.columns(2)
         with c1:
-            ma_don = st.text_input("Mã đơn hàng", value=f"ORD-{datetime.now().strftime('%m%d-%H%M')}")
+            # [SỬA 1] Không sinh mã ngay, để trống và cho phép nhập tay nếu muốn
+            ma_don_input = st.text_input("Mã đơn hàng", placeholder="Để trống = Tự sinh ", help="Nếu để trống, hệ thống sẽ tự sinh mã theo thời gian lúc bấm Lưu.")
             
             # Ten Khach Hang
-            # Sử dụng key để có thể update từ code
             if "form_ten_khach" not in st.session_state: st.session_state.form_ten_khach = defaults.get("ten_khach_hang", "")
             ten_khach = st.text_input("Tên khách hàng", key="form_ten_khach")
 
@@ -162,55 +166,38 @@ def hien_thi_form_tao_don():
         with c2:
             # --- LOGIC CHỌN SHOP (LINE) ---
             shop_options = ["TGTĐ", "Inside", "Lanh Canh"]
-            
-            # Lấy Shop từ AI, nếu không khớp danh sách thì mặc định Inside
             ai_shop_suggest = defaults.get("shop", "Inside")
-            if ai_shop_suggest not in shop_options: 
-                ai_shop_suggest = "Inside"
-                
+            if ai_shop_suggest not in shop_options: ai_shop_suggest = "Inside"
             selected_shop = st.selectbox("Shop (Line sản phẩm)", shop_options, index=shop_options.index(ai_shop_suggest))
             
-            # --- [MỚI] MAP NGÀY THÁNG TỪ AI ---
-            # Xử lý ngày trả (String -> Datetime)
+            # --- MAP NGÀY THÁNG ---
             ai_ngay_tra_str = defaults.get("ngay_tra")
-            val_ngay_tra = datetime.now() # Mặc định là hôm nay
-            
+            val_ngay_tra = datetime.now()
             if ai_ngay_tra_str:
-                try:
-                    # Convert chuỗi "2026-01-20" thành đối tượng datetime
-                    val_ngay_tra = datetime.strptime(ai_ngay_tra_str, "%Y-%m-%d")
-                except:
-                    pass # Nếu lỗi format thì giữ nguyên mặc định
+                try: val_ngay_tra = datetime.strptime(ai_ngay_tra_str, "%Y-%m-%d")
+                except: pass
             
             ngay_dat = st.date_input("Ngày đặt", value=datetime.now())
-            # --- [MỚI] CHECKBOX HẸN NGÀY ---
+            
             c_date, c_check = st.columns([2, 1])
-            
-            # Lấy giá trị từ AI (True/False)
             ai_co_hen = defaults.get("co_hen_ngay", False)
-            
             with c_date:
                 ngay_tra = st.date_input("Ngày trả dự kiến", value=val_ngay_tra)
             with c_check:
-                st.write("") # Spacer cho thẳng hàng
+                st.write("")
                 st.write("") 
-                co_hen_ngay = st.checkbox("🚨 Khách hẹn?", value=ai_co_hen, help="Tích vào nếu khách yêu cầu ngày cố định/gấp")
+                co_hen_ngay = st.checkbox("🚨 Khách hẹn?", value=ai_co_hen)
             
-            # --- [MỚI] MAP THANH TOÁN & VẬN CHUYỂN ---
+            # --- MAP THANH TOÁN & VẬN CHUYỂN ---
             opts_httt = ["Ship COD 💵", "0đ 📷"]
             opts_vc = ["Thường", "Xe Ôm 🏍", "Bay ✈"]
-            
-            # Lấy giá trị từ AI
             ai_httt = defaults.get("httt", "Ship COD 💵")
             ai_vc = defaults.get("van_chuyen", "Thường")
-            
-            # Tìm vị trí (index) trong danh sách options
-            # Nếu AI trả về "Chuyển khoản", nó sẽ tìm thấy index là 1
             idx_httt = opts_httt.index(ai_httt) if ai_httt in opts_httt else 0
             idx_vc = opts_vc.index(ai_vc) if ai_vc in opts_vc else 0
 
-            httt = st.selectbox("Hình thức thanh toán", opts_httt, index=idx_httt) # <--- Đã map index
-            van_chuyen = st.selectbox("Vận chuyển", opts_vc, index=idx_vc)         # <--- Đã map index
+            httt = st.selectbox("Hình thức thanh toán", opts_httt, index=idx_httt)
+            van_chuyen = st.selectbox("Vận chuyển", opts_vc, index=idx_vc)
 
         st.divider()
         st.markdown("#### 📦 Chi tiết sản phẩm")
@@ -241,11 +228,19 @@ def hien_thi_form_tao_don():
         if st.form_submit_button("💾 LƯU ĐƠN HÀNG", type="primary", use_container_width=True):
             items_list = [i for i in edited_items.to_dict('records') if str(i['ten_sp']).strip() != ""]
 
-            if not ten_khach or not ma_don:
-                st.error("❌ Thiếu tên khách hoặc mã đơn!")
+            # [SỬA 2] Logic sinh mã đơn tại thời điểm bấm nút
+            final_ma_don = ma_don_input.strip()
+            if not final_ma_don:
+                # Nếu không nhập gì -> Tự sinh theo giờ hiện tại
+                final_ma_don = f"ORD-{datetime.now().strftime('%m%d-%H%M-%S')}"
+
+            if not ten_khach:
+                st.error("❌ Thiếu tên khách hàng!")
+            elif not items_list:
+                st.error("❌ Đơn hàng phải có ít nhất 1 sản phẩm!")
             else:
                 order_data = {
-                    "ma_don": ma_don,
+                    "ma_don": final_ma_don, # Dùng mã vừa chốt
                     "ten_khach": ten_khach,
                     "sdt": sdt,
                     "dia_chi": dia_chi,
@@ -256,14 +251,14 @@ def hien_thi_form_tao_don():
                     "con_lai": thanh_tien - da_coc,
                     "httt": httt,
                     "van_chuyen": van_chuyen,
-                    "shop": selected_shop,  # <--- LƯU TRƯỜNG SHOP
+                    "shop": selected_shop,
                     "trang_thai": "New",
                     "co_hen_ngay": co_hen_ngay
                 }
 
                 if save_full_order(order_data, items_list):
-                    st.success(f"✅ Đã lưu đơn {ma_don}!")
-                    msg = f"🚀 <b>ĐƠN MỚI ({selected_shop}): {ma_don}</b>\nKhách: {ten_khach}\nTổng: {thanh_tien:,.0f}đ"
+                    st.success(f"✅ Đã lưu đơn {final_ma_don}!")
+                    msg = f"🚀 <b>ĐƠN MỚI ({selected_shop}): {final_ma_don}</b>\nKhách: {ten_khach}\nTổng: {thanh_tien:,.0f}đ"
                     send_telegram_notification(msg)
                     st.session_state.ai_order_data = {}
                     st.session_state.temp_items = [{"ten_sp": "", "mau": "", "size": "", "kieu_theu": "", "thong_tin_phu": ""}]
@@ -278,61 +273,337 @@ def hien_thi_form_tao_don():
 def render_order_management(df):
     st.markdown("<h2 style='text-align: center;'>📊 Dashboard Điều Hành</h2>", unsafe_allow_html=True)
 
-    # --- 1. METRICS LOGIC ---
+    # --- 0. CHUẨN HÓA DATA ---
+    STATUS_DONE = ['Hoàn thành', 'Done', 'Đã giao', 'Completed', 'Success']
+    STATUS_CANCEL = ['Đã hủy', 'Cancelled', 'Hủy', 'Fail', 'Aborted']
+    IGNORE_STATUSES = STATUS_DONE + STATUS_CANCEL 
+
     if not df.empty:
         df['trang_thai'] = df['trang_thai'].astype(str).str.strip()
+        if 'shop' not in df.columns: df['shop'] = "Inside"
+        if 'thanh_tien' in df.columns: df['thanh_tien'] = pd.to_numeric(df['thanh_tien'], errors='coerce').fillna(0)
+        if 'da_coc' in df.columns: df['da_coc'] = pd.to_numeric(df['da_coc'], errors='coerce').fillna(0)
         
-        tong_don = len(df)
-        doanh_thu = df['thanh_tien'].sum() if 'thanh_tien' in df.columns else 0
-        
-        STATUS_DONE = ['Hoàn thành', 'Done', 'Đã giao', 'Completed', 'Success']
-        STATUS_CANCEL = ['Đã hủy', 'Cancelled', 'Hủy', 'Fail', 'Aborted']
-        
-        da_xong = len(df[df['trang_thai'].isin(STATUS_DONE)])
-        da_huy = len(df[df['trang_thai'].isin(STATUS_CANCEL)])
-        dang_xu_ly = tong_don - da_xong - da_huy
-    else:
-        tong_don, doanh_thu, da_xong, dang_xu_ly, da_huy = 0, 0, 0, 0, 0
+        # Convert Date
+        if 'ngay_dat' in df.columns:
+            df['ngay_dat_filter'] = pd.to_datetime(df['ngay_dat'], errors='coerce').dt.date
+        if 'ngay_tra' in df.columns:
+            df['ngay_tra_filter'] = pd.to_datetime(df['ngay_tra'], errors='coerce').dt.date
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Tổng đơn", tong_don)
-    m2.metric("Đang xử lý", dang_xu_ly)
-    m3.metric("Đã xong", da_xong)
-    m4.metric("Đã hủy", da_huy)
-    m5.metric("Doanh thu", f"{doanh_thu:,.0f}đ")
+    # =================================================================================
+    # 1. METRICS (BOX KPI) - GIỮ NGUYÊN
+    # =================================================================================
+    metrics_container = st.container()
     
-    st.divider()
+    # Tạo khoảng cách lớn để tách biệt Metrics và phần dưới
+    st.markdown("###") 
 
-    # --- 2. TABLE & FILTER ---
-    df_status = tai_danh_sach_trang_thai()
-    options_status = df_status["Trạng thái"].tolist()
-    
-    # Check cột shop
-    if not df.empty and 'shop' not in df.columns: df['shop'] = "Inside"
-    
-    c_filter1, c_filter2, c_filter3 = st.columns([1, 1, 0.5]) # Chia lại cột
-    
-    status_filter = c_filter1.multiselect("Lọc trạng thái:", options_status)
-    shop_filter = c_filter2.multiselect("Lọc Shop:", ["TGTĐ", "Inside", "Lanh Canh"])
-    
-    # Checkbox lọc đơn hẹn
-    loc_hen_ngay = c_filter3.checkbox("🚨 Chỉ đơn hẹn", value=False)
+    # =================================================================================
+    # 2. KHU VỰC ĐIỀU KHIỂN: NHẮC VIỆC (TRÁI) - BỘ LỌC (PHẢI)
+    # =================================================================================
+    c_control_left, c_control_right = st.columns([1, 1], gap="medium")
 
+    # --- BOX TRÁI: NHẮC VIỆC ---
+    with c_control_left:
+        with st.container(border=True):
+            st.markdown("##### 🔔 Nhắc việc quan trọng")
+            
+            # Tính toán dữ liệu nhắc việc
+            count_urgent_today = 0
+            count_due_tomorrow = 0
+            df_urgent_today = pd.DataFrame()
+            df_due_tomorrow = pd.DataFrame()
+
+            if not df.empty:
+                today = datetime.now().date()
+                tomorrow = today + pd.Timedelta(days=1)
+                
+                # Lấy data chưa xong từ DF GỐC (Không bị ảnh hưởng bởi bộ lọc bên phải)
+                df_pending = df[~df['trang_thai'].isin(IGNORE_STATUSES)]
+                
+                if not df_pending.empty and 'ngay_tra_filter' in df_pending.columns:
+                    # 1. Đơn Hẹn Trả Hôm Nay
+                    df_urgent_today = df_pending[
+                        (df_pending['co_hen_ngay'] == True) & 
+                        (df_pending['ngay_tra_filter'] == today)
+                    ]
+                    count_urgent_today = len(df_urgent_today)
+                    
+                    # 2. Đơn Trả Ngày Mai
+                    df_due_tomorrow = df_pending[
+                        (df_pending['ngay_tra_filter'] == tomorrow)
+                    ]
+                    count_due_tomorrow = len(df_due_tomorrow)
+            
+            # Hiển thị UI trong box nhỏ
+            if count_urgent_today > 0:
+                st.error(f"🔥 **HÔM NAY: {count_urgent_today} đơn hẹn gấp!**")
+                with st.expander("Xem chi tiết", expanded=False):
+                    for _, row in df_urgent_today.iterrows():
+                        st.caption(f"• {row['ma_don']} | {row['ten_khach']}")
+            else:
+                st.success("✅ Hôm nay: Không có đơn hẹn gấp.", icon="👍")
+
+            st.markdown("---") # Kẻ ngang nhỏ trong box
+
+            if count_due_tomorrow > 0:
+                st.warning(f"⏳ **NGÀY MAI: {count_due_tomorrow} đơn cần trả.**")
+                with st.expander("Xem chi tiết", expanded=False):
+                     for _, row in df_due_tomorrow.iterrows():
+                        icon_hen = "🚨" if row.get('co_hen_ngay') else ""
+                        st.caption(f"• {icon_hen} {row['ma_don']} | {row['ten_khach']}")
+            else:
+                st.info("☕ Ngày mai: Chưa có lịch trả hàng.", icon="✨")
+
+    # --- BOX PHẢI: BỘ LỌC ---
+    with c_control_right:
+        with st.container(border=True):
+            st.markdown("##### 🌪️ Bộ lọc dữ liệu")
+            
+            df_status = tai_danh_sach_trang_thai()
+            options_status = df_status["Trạng thái"].tolist()
+            
+            # Hàng 1: Trạng thái
+            status_filter = st.multiselect("Trạng thái:", options_status, placeholder="Chọn trạng thái...")
+            
+            # Hàng 2: Shop & Checkbox Urgent & Checkbox Chưa in
+            # [CẬP NHẬT] Chia thành 3 cột: Shop (2 phần) | Hẹn (1 phần) | Chưa In (1 phần)
+            c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
+            
+            with c_f1:
+                shop_filter = st.multiselect("Shop:", ["TGTĐ", "Inside", "Lanh Canh"], placeholder="Chọn Shop")
+            
+            with c_f2:
+                st.write("") # Spacer căn lề
+                st.write("")
+                loc_hen_ngay = st.checkbox("🚨 Đơn hẹn", value=False, help="Chỉ hiện đơn có hẹn ngày trả")
+
+            with c_f3:
+                st.write("") # Spacer căn lề
+                st.write("")
+                # [MỚI] Checkbox lọc đơn chưa in
+                loc_chua_in = st.checkbox("🖨️ Chưa in", value=False, help="Chỉ hiện đơn chưa in phiếu")
+            
+            # Hàng 3: Ngày tháng
+            with st.expander("📅 Lọc theo ngày (Đặt / Trả)"):
+                range_ngay_dat = st.date_input("Ngày Đặt:", value=[], label_visibility="collapsed")
+                st.caption("Khoảng ngày đặt")
+                range_ngay_tra = st.date_input("Ngày Trả:", value=[], label_visibility="collapsed")
+                st.caption("Khoảng ngày trả")
+    # =================================================================================
+    # 3. XỬ LÝ DATA (APPLY FILTER)
+    # =================================================================================
     if not df.empty:
         df_show = df.copy()
+        
         if status_filter: df_show = df_show[df_show['trang_thai'].isin(status_filter)]
         if shop_filter: df_show = df_show[df_show['shop'].isin(shop_filter)]
-        if loc_hen_ngay:
-            # Lọc những dòng co_hen_ngay == True
-            if 'co_hen_ngay' in df_show.columns:
-                df_show = df_show[df_show['co_hen_ngay'] == True]
-        
-        # Bảng hiển thị tóm tắt
-        st.dataframe(
-            df_show[["ma_don", "ten_khach", "shop", "sdt", "thanh_tien", "trang_thai"]],
+        if loc_hen_ngay and 'co_hen_ngay' in df_show.columns:
+            df_show = df_show[df_show['co_hen_ngay'] == True]
+        if loc_chua_in:
+            if 'da_in' in df_show.columns:
+                # Lấy những đơn da_in là False hoặc NaN (chưa có dữ liệu)
+                df_show = df_show[df_show['da_in'] != True]            
+        if len(range_ngay_dat) == 2:
+            s_d, e_d = range_ngay_dat
+            if 'ngay_dat_filter' in df_show.columns:
+                df_show = df_show[(df_show['ngay_dat_filter'] >= s_d) & (df_show['ngay_dat_filter'] <= e_d)]
+
+        if len(range_ngay_tra) == 2:
+            s_t, e_t = range_ngay_tra
+            if 'ngay_tra_filter' in df_show.columns:
+                df_show = df_show[(df_show['ngay_tra_filter'] >= s_t) & (df_show['ngay_tra_filter'] <= e_t)]
+    else:
+        df_show = pd.DataFrame()
+
+    # =================================================================================
+    # 4. ĐIỀN METRICS (LOGIC CŨ - LAYOUT 2 BOX NGANG)
+    # =================================================================================
+    with metrics_container:
+        if not df_show.empty:
+            tong_don = len(df_show)
+            da_xong = len(df_show[df_show['trang_thai'].isin(STATUS_DONE)])
+            da_huy = len(df_show[df_show['trang_thai'].isin(STATUS_CANCEL)])
+            dang_xu_ly = tong_don - da_xong - da_huy
+            
+            df_rev = df_show[~df_show['trang_thai'].isin(STATUS_CANCEL)]
+            dt_ban_hang = df_rev['thanh_tien'].sum()
+            dt_coc = df_rev['da_coc'].sum()
+            
+            def tinh_thuc_nhan(row):
+                if row['trang_thai'] in STATUS_DONE: return row['thanh_tien']
+                else: return row['da_coc']
+            
+            dt_thuc_nhan = df_rev.apply(tinh_thuc_nhan, axis=1).sum()
+        else:
+            tong_don, da_xong, da_huy, dang_xu_ly = 0, 0, 0, 0
+            dt_ban_hang, dt_coc, dt_thuc_nhan = 0, 0, 0
+
+        # Layout Metrics (2 box ngang như yêu cầu trước)
+        col_left, col_right = st.columns(2, gap="medium")
+        with col_left:
+            with st.container(border=True):
+                st.markdown("##### 📦 Tình trạng đơn hàng")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Tổng", tong_don)
+                c2.metric("Xử lý", dang_xu_ly)
+                c3.metric("Xong", da_xong)
+                c4.metric("Hủy", da_huy)
+        with col_right:
+            with st.container(border=True):
+                st.markdown("##### 💰 Tài chính (Thực tế)")
+                r1, r2, r3 = st.columns(3)
+                r1.metric("Bán Hàng", f"{dt_ban_hang:,.0f}đ")
+                r2.metric("Thực Nhận", f"{dt_thuc_nhan:,.0f}đ", delta_color="normal")
+                r3.metric("Tổng Cọc", f"{dt_coc:,.0f}đ")
+
+    # =================================================================================
+    # 5. HIỂN THỊ BẢNG
+    # =================================================================================
+    st.divider()
+
+    if not df_show.empty:
+        # Sort & Deadline logic
+        if 'co_hen_ngay' in df_show.columns:
+            df_show['is_urgent_active'] = df_show.apply(
+                lambda x: True if (x.get('co_hen_ngay') == True and str(x.get('trang_thai')).strip() not in IGNORE_STATUSES) else False,
+                axis=1
+            )
+            df_show = df_show.sort_values(by=['is_urgent_active', 'created_at'], ascending=[False, False])
+            
+            df_show['deadline'] = df_show.apply(
+                lambda x: "🚨 " + str(x['ngay_tra']) if x['is_urgent_active'] else str(x.get('ngay_tra')), 
+                axis=1
+            )
+        else:
+            df_show['deadline'] = df_show.get('ngay_tra', '')
+
+        # Display Icon
+        if 'da_in' in df_show.columns:
+            df_show['display_ma_don'] = df_show.apply(
+                lambda x: f"🖨️ {x['ma_don']}" if x.get('da_in') == True else x['ma_don'], 
+                axis=1
+            )
+        else:
+            df_show['display_ma_don'] = df_show['ma_don']
+
+        # Render
+        cols_to_show = ["display_ma_don", "ten_khach", "shop", "deadline", "thanh_tien", "trang_thai"]
+        valid_cols = [c for c in cols_to_show if c in df_show.columns]
+        df_display = df_show[valid_cols].reset_index(drop=True)
+
+        # --- STYLE: Highlight Urgent ---
+        def highlight_urgent(row):
+            if "🚨" in str(row.get('deadline', '')):
+                return ['background-color: #ffebee; color: #c62828; font-weight: bold'] * len(row)
+            else:
+                return [''] * len(row)
+
+        styled_df = df_display.style.apply(highlight_urgent, axis=1)
+
+        # --- RENDER TABLE & SELECTION ---
+        # Sử dụng st.dataframe với on_select (Streamlit mới) để vừa có Style vừa có Chọn
+        event = st.dataframe(
+            styled_df,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            column_config={
+                "display_ma_don": st.column_config.TextColumn("Mã đơn hàng", width="medium"),
+                "thanh_tien": st.column_config.NumberColumn("Thành tiền", format="%d đ"),
+                "deadline": st.column_config.TextColumn("Hạn chót", width="medium"),
+                "shop": st.column_config.TextColumn("Shop", width="small"),
+                "trang_thai": st.column_config.TextColumn("Trạng thái", width="small")
+            },
+            on_select="rerun", # Fix: interactive -> rerun
+            selection_mode="multi-row",
+            key="order_table_selection"
         )
+        
+        # --- ACTION BUTTONS (IN / EXPORT) ---
+        # Lấy các rows được chọn từ event
+        selected_indices = event.selection.rows
+        
+        # Layout: 6 phần trống bên trái, 2 phần bên phải cho 2 nút
+        # Điều chỉnh tỷ lệ tùy theo độ rộng màn hình, ví dụ [5, 1, 1] hoặc [6, 1.5, 1.5]
+        # Ở đây dùng [6, 1.2, 1.3] để nút không bị quá bé
+        c_spacer, c_btn_print, c_btn_excel = st.columns([5, 1.5, 1.5])
+
+        with c_spacer:
+            st.empty() # Spacer
+
+        with c_btn_print:
+            if st.button("🖨️ In đơn", type="primary", use_container_width=True, help="In các đơn đã chọn"):
+                if not selected_indices:
+                    st.warning("Chưa chọn!")
+                else:
+                    try:
+                        # ...logic in gộp (giữ nguyên hoặc copy lại)...
+                        selected_rows = df_display.iloc[selected_indices]
+                        selected_ma_don = []
+                        for _, row in selected_rows.iterrows():
+                            raw_ma = str(row['display_ma_don'])
+                            if "🖨️" in raw_ma: raw_ma = raw_ma.replace("🖨️", "").strip()
+                            selected_ma_don.append(raw_ma)
+                        
+                        if selected_ma_don:
+                            # Fetch data
+                            orders_data_list = []
+                            from modules.data_handler import get_order_details, mark_order_as_printed
+                            with st.spinner(f"Xử lý {len(selected_ma_don)} đơn..."):
+                                for ma in selected_ma_don:
+                                    mark_order_as_printed(ma)
+                                    o_info, o_items = get_order_details(ma)
+                                    if o_info: orders_data_list.append({"order_info": o_info, "items": o_items})
+                            
+                            if orders_data_list:
+                                combined_html = generate_combined_print_html(orders_data_list)
+                                @st.dialog("🖨️ Xem trước bản in (Gộp)", width="large")
+                                def show_combined_print_preview(html_content):
+                                    st.caption("Bấm nút 'IN (TẤT CẢ)' màu xanh bên dưới để in.")
+                                    components.html(html_content, height=800, scrolling=True)
+                                show_combined_print_preview(combined_html)
+                    except Exception as e: st.error(f"Lỗi: {e}")
+
+        with c_btn_excel:
+            # Excel Export Button logic
+            if st.button("📥 Xuất Excel", key="btn_prep_excel", use_container_width=True, help="Xuất đơn đã chọn ra Excel mẫu Nobita"):
+                if not selected_indices:
+                    st.warning("Chưa chọn!")
+                else:
+                    try:
+                        selected_rows_ex = df_display.iloc[selected_indices]
+                        selected_ma_don_ex = []
+                        for _, row in selected_rows_ex.iterrows():
+                            raw_ma = str(row['display_ma_don'])
+                            if "🖨️" in raw_ma: raw_ma = raw_ma.replace("🖨️", "").strip()
+                            selected_ma_don_ex.append(raw_ma)
+                            
+                        if selected_ma_don_ex:
+                            orders_data_ex = []
+                            from modules.data_handler import get_order_details
+                            with st.spinner("Đang tạo..."):
+                                for ma in selected_ma_don_ex:
+                                    # Không đánh dấu đã in khi xuất excel
+                                    o_info, o_items = get_order_details(ma)
+                                    if o_info: orders_data_ex.append({"order_info": o_info, "items": o_items})
+                            
+                            if orders_data_ex:
+                                excel_buffer = export_orders_to_excel(orders_data_ex)
+                                f_name = f"Excel_Nobita_{datetime.now().strftime('%d.%m')}.xlsx"
+                                
+                                # Auto download hack hoặc hiện nút download
+                                st.download_button(
+                                    label="⬇️ TẢI VỀ",
+                                    data=excel_buffer,
+                                    file_name=f_name,
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    type="primary",
+                                    icon="✅"
+                                )
+                            else: st.error("Rỗng!")
+                    except Exception as e: st.error(f"Lỗi: {e}")
+    else:
+        st.warning("Không tìm thấy đơn hàng phù hợp với bộ lọc.")
 
     # --- 3. DETAIL VIEW (CRM SEARCH ENGINE) ---
     st.markdown("---")
@@ -438,9 +709,19 @@ def render_order_detail_view(ma_don):
                     if update_order_info(ma_don, update_data):
                         st.success("Đã cập nhật!"); time.sleep(0.5); st.rerun()
 
-            # --- NÚT IN PHIẾU (Đã thêm mới) ---
+            # --- NÚT IN PHIẾU (Đã cập nhật logic Đã In) ---
             st.markdown("---")
+            
+            # Kiểm tra trạng thái đã in để cảnh báo (Optional)
+            if order_info.get('da_in'):
+                st.caption("✅ Đơn này đã từng được in phiếu.")
+
             if st.button("🖨️ XEM & IN PHIẾU", use_container_width=True, key=f"btn_print_{ma_don}"):
+                # 1. Gọi hàm đánh dấu đã in vào Database ngay khi bấm nút
+                # (Import hàm này từ data_handler nhé)
+                mark_order_as_printed(ma_don)
+                
+                # 2. Tạo nội dung HTML
                 html_content = generate_print_html(order_info, items)
                 
                 @st.dialog("🖨️ Xem trước bản in", width="large")
@@ -449,52 +730,152 @@ def render_order_detail_view(ma_don):
                     components.html(html, height=800, scrolling=True)
                 
                 show_print_preview(html_content)
-
-        # ================= CỘT PHẢI: SẢN PHẨM (DYNAMIC SHOP) =================
+                
+# ================= CỘT PHẢI: SẢN PHẨM (DYNAMIC SHOP) =================
         with c_items:
             st.markdown(f"#### 🛒 Sản phẩm ({len(items)}) - {current_shop}")
+            
+            # --- [MỚI] HÀM HIỂN THỊ ẢNH VUÔNG (CROP CENTER) ---
+            def hien_thi_anh_vuong(url, label="Ảnh"):
+                if url:
+                    st.markdown(
+                        f"""
+                        <div style="
+                            width: 100%;
+                            aspect-ratio: 1 / 1;
+                            background-image: url('{url}');
+                            background-size: cover;
+                            background-position: center;
+                            border-radius: 8px;
+                            border: 1px solid #e0e0e0;
+                            margin-bottom: 5px;
+                            cursor: pointer;
+                        " title="{label}"></div>
+                        <div style="text-align: center; margin-bottom: 8px;">
+                            <a href="{url}" target="_blank" style="text-decoration: none; font-size: 0.8em; color: #555;">🔍 Xem Full</a>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+            # --- 1. CALLBACK CHO 1 FILE ---
+            def auto_upload_callback(uploader_key, item_id, file_suffix, db_column):
+                uploaded_file = st.session_state.get(uploader_key)
+                if uploaded_file:
+                    url = upload_image_to_supabase(uploaded_file, f"item_{item_id}_{file_suffix}.png")
+                    if url:
+                        update_item_image(item_id, url, db_column)
+                        st.toast(f"✅ Đã lưu {db_column}!", icon="💾")
+
+            # --- 2. CALLBACK CHO NHIỀU FILE ---
+            def auto_upload_multiple_callback(uploader_key, item_id, db_column, version_key):
+                uploaded_files = st.session_state.get(uploader_key)
+                if uploaded_files:
+                    str_urls = upload_multiple_files_to_supabase(uploaded_files, item_id)
+                    if str_urls:
+                        update_item_image(item_id, str_urls, db_column)
+                        if version_key in st.session_state:
+                            st.session_state[version_key] += 1
+                        st.toast(f"✅ Đã ghi đè {len(uploaded_files)} file mới!", icon="📂")
+
             if items:
                 for item in items:
                     with st.container(border=True):
-                        # 1. LINE LANH CANH
-                        if current_shop == "Lanh Canh":
-                            st.write(f"**{item.get('ten_sp')}** | {item.get('mau')} | {item.get('size')}")
                         
-                        # 2. LINE TGTĐ & INSIDE
-                        else:
-                            # CHIA CỘT: [Info] | [Ảnh Input] | [Ảnh Output] | [File Design]
+                        # =========================================================
+                        # CASE 1: LANH CANH (2 ẢNH: CHÍNH, SỬA ĐỔI)
+                        # =========================================================
+                        if current_shop == "Lanh Canh":
+                            # Layout: [Info 1.2] | [Chính 1] | [Sửa đổi 1]
+                            cols = st.columns([1.2, 1, 1])
+                            
+                            # Cột 0: Info
+                            with cols[0]:
+                                st.write(f"**{item.get('ten_sp')}**")
+                                st.caption(f"{item.get('mau')} / {item.get('size')}")
+                            
+                            # Cột 1: Sản phẩm chính (img_main)
+                            with cols[1]:
+                                st.write("📸 SP Chính")
+                                hien_thi_anh_vuong(item.get('img_main'), "SP Chính")
+                                k_lc_main = f"u_lc_m_{item.get('id')}"
+                                st.file_uploader("Up Chính", key=k_lc_main, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_lc_main, item.get('id'), "main", "img_main"))
+                            
+                            # Cột 2: Mẫu sửa đổi (Lưu vào img_sub1)
+                            with cols[2]:
+                                st.write("📝 Mẫu sửa đổi")
+                                hien_thi_anh_vuong(item.get('img_sub1'), "Mẫu sửa đổi")
+                                k_lc_sub = f"u_lc_s_{item.get('id')}"
+                                st.file_uploader("Up Sửa đổi", key=k_lc_sub, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_lc_sub, item.get('id'), "fix_sample", "img_sub1"))
+
+                        # =========================================================
+                        # CASE 2: INSIDE (3 ẢNH: CHÍNH, PHỤ 1, PHỤ 2)
+                        # =========================================================
+                        elif current_shop == "Inside":
                             cols = st.columns([1.2, 1, 1, 1])
                             
-                            # --- Info ---
+                            with cols[0]:
+                                st.write(f"**{item.get('ten_sp')}**")
+                                st.caption(f"{item.get('mau')} / {item.get('size')}")
+                                st.caption(f"YC: {item.get('kieu_theu')}")
+                            
+                            with cols[1]:
+                                st.write("1️⃣ Ảnh Chính")
+                                hien_thi_anh_vuong(item.get('img_main'), "Ảnh Chính")
+                                k_in_main = f"u_in_m_{item.get('id')}"
+                                st.file_uploader("Up Chính", key=k_in_main, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_in_main, item.get('id'), "main", "img_main"))
+                            
+                            with cols[2]:
+                                st.write("2️⃣ Ảnh Phụ 1")
+                                hien_thi_anh_vuong(item.get('img_sub1'), "Ảnh Phụ 1")
+                                k_in_sub1 = f"u_in_s1_{item.get('id')}"
+                                st.file_uploader("Up Phụ 1", key=k_in_sub1, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_in_sub1, item.get('id'), "sub1", "img_sub1"))
+
+                            with cols[3]:
+                                st.write("3️⃣ Ảnh Phụ 2")
+                                hien_thi_anh_vuong(item.get('img_design'), "Ảnh Phụ 2")
+                                k_in_sub2 = f"u_in_s2_{item.get('id')}"
+                                st.file_uploader("Up Phụ 2", key=k_in_sub2, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_in_sub2, item.get('id'), "sub2", "img_design"))
+
+                        # =========================================================
+                        # CASE 3: TGTĐ (VÀ MẶC ĐỊNH)
+                        # =========================================================
+                        else:
+                            cols = st.columns([1.2, 1, 1, 1, 1])
+                            
                             with cols[0]:
                                 st.write(f"**{item.get('ten_sp')}**")
                                 st.caption(f"{item.get('mau')} / {item.get('size')}")
                                 st.caption(f"YC: {item.get('kieu_theu')}")
 
-                            # --- CỘT 1: ẢNH GỐC (INPUT) ---
                             with cols[1]:
                                 st.write("1️⃣ Ảnh Gốc")
-                                if item.get('img_main'): st.image(item.get('img_main'), use_container_width=True)
-                                
-                                up_main = st.file_uploader("Up gốc", key=f"u_m_{item.get('id')}", label_visibility="collapsed")
-                                if up_main and st.button("Lưu Gốc", key=f"s_m_{item.get('id')}"):
-                                    url = upload_image_to_supabase(up_main, f"item_{item.get('id')}_main.png")
-                                    if url and update_item_image(item.get('id'), url, "img_main"): st.rerun()
+                                hien_thi_anh_vuong(item.get('img_main'), "Ảnh Gốc")
+                                k_main = f"u_m_{item.get('id')}"
+                                st.file_uploader("Up gốc", key=k_main, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_main, item.get('id'), "main", "img_main"))
 
-                            # --- CỘT 2: ẢNH AI / PET (OUTPUT) ---
                             with cols[2]:
-                                lbl_col2 = "2️⃣ Kết quả AI" if current_shop == "TGTĐ" else "📸 Ảnh Pet"
-                                st.write(lbl_col2)
-                                if item.get('img_sub1'): st.image(item.get('img_sub1'), use_container_width=True)
-                                
-                                # Nút GEN AI chỉ hiện ở TGTĐ
-                                if current_shop == "TGTĐ":
-                                    if st.button("✨ Gen AI", key=f"ai_{item.get('id')}", type="primary"):
+                                st.write("2️⃣ Kết quả AI")
+                                hien_thi_anh_vuong(item.get('img_sub1'), "Kết quả AI")
+                                if st.button("✨ Gen AI", key=f"ai_{item.get('id')}", type="primary"):
+                                    try:
                                         input_bytes = None
-                                        if up_main: input_bytes = up_main.getvalue()
+                                        up_obj = st.session_state.get(k_main)
+                                        if up_obj: input_bytes = up_obj.getvalue()
                                         elif item.get('img_main'):
-                                            try: input_bytes = requests.get(item.get('img_main')).content
-                                            except: pass
+                                            input_bytes = requests.get(item.get('img_main')).content
                                         
                                         if input_bytes:
                                             with st.spinner("AI đang vẽ..."):
@@ -504,36 +885,64 @@ def render_order_detail_view(ma_don):
                                                     if url and update_item_image(item.get('id'), url, "img_sub1"): st.rerun()
                                                 else: st.error("AI lỗi")
                                         else: st.warning("Cần ảnh gốc!")
-                                else:
-                                    # Inside: Upload thủ công
-                                    up_sub1 = st.file_uploader("Up Pet", key=f"u_s1_{item.get('id')}", label_visibility="collapsed")
-                                    if up_sub1 and st.button("Lưu Pet", key=f"s_s1_{item.get('id')}"):
-                                        url = upload_image_to_supabase(up_sub1, f"item_{item.get('id')}_pet.png")
-                                        if url and update_item_image(item.get('id'), url, "img_sub1"): st.rerun()
+                                    except: pass
 
-                            # --- CỘT 3: FILE DESIGN / KHÁC ---
                             with cols[3]:
-                                lbl_col3 = "3️⃣ File Design" if current_shop == "TGTĐ" else "📂 Ảnh Khác"
-                                st.write(lbl_col3)
+                                st.write("3️⃣ Ảnh Design")
+                                hien_thi_anh_vuong(item.get('img_design'), "Ảnh Design")
+                                if not item.get('img_design'): st.info("Chưa có")
+                                k_des = f"u_des_{item.get('id')}"
+                                st.file_uploader("Up Design", key=k_des, label_visibility="collapsed",
+                                                 on_change=auto_upload_callback,
+                                                 args=(k_des, item.get('id'), "design", "img_design"))
+
+                            with cols[4]:
+                                st.write("4️⃣ File Thêu")
+                                if item.get('img_sub2'):
+                                    links = item.get('img_sub2').split(' ; ')
+                                    for i, l in enumerate(links): st.markdown(f"💾 [Tải File {i+1}]({l})")
+                                else: st.caption("Trống")
                                 
-                                if current_shop == "TGTĐ":
-                                    if item.get('img_sub2'):
-                                        links = item.get('img_sub2').split(' ; ')
-                                        for i, l in enumerate(links): st.markdown(f"⬇️ [File {i+1}]({l})")
-                                    
-                                    up_files = st.file_uploader("Up Files", key=f"u_f_{item.get('id')}", accept_multiple_files=True, label_visibility="collapsed")
-                                    if up_files and st.button("Lưu Files", key=f"s_f_{item.get('id')}"):
-                                        s = upload_multiple_files_to_supabase(up_files, item.get('id'))
-                                        if s and update_item_image(item.get('id'), s, "img_sub2"): st.rerun()
-                                else:
-                                    if item.get('img_sub2'): st.image(item.get('img_sub2'), use_container_width=True)
-                                    up_sub2 = st.file_uploader("Up Khác", key=f"u_s2_{item.get('id')}", label_visibility="collapsed")
-                                    if up_sub2 and st.button("Lưu Khác", key=f"s_s2_{item.get('id')}"):
-                                        url = upload_image_to_supabase(up_sub2, f"item_{item.get('id')}_other.png")
-                                        if url and update_item_image(item.get('id'), url, "img_sub2"): st.rerun()
+                                ver_key = f"uploader_ver_{item.get('id')}"
+                                if ver_key not in st.session_state: st.session_state[ver_key] = 0
+                                k_files_dynamic = f"u_f_{item.get('id')}_v{st.session_state[ver_key]}"
+                                
+                                st.file_uploader("Up Files (Ghi đè)", key=k_files_dynamic, accept_multiple_files=True, 
+                                                 label_visibility="collapsed", on_change=auto_upload_multiple_callback,
+                                                 args=(k_files_dynamic, item.get('id'), "img_sub2", ver_key))
+
+                        # =========================================================
+                        # PHẦN DƯỚI: YÊU CẦU SỬA (CHUNG CHO TẤT CẢ SHOP)
+                        # =========================================================
+                        st.divider()
+                        st.markdown("🛠️ **Yêu cầu sửa / Feedback khách hàng**")
+                        c_fix1, c_fix2, c_fix3 = st.columns([2, 1, 1])
+                        
+                        with c_fix1:
+                            curr_note = item.get('yeu_cau_sua') if item.get('yeu_cau_sua') else ""
+                            new_note = st.text_area("Nội dung sửa:", value=curr_note, height=100, key=f"txt_fix_{item.get('id')}")
+                            if st.button("💾 Lưu Note", key=f"btn_save_fix_{item.get('id')}"):
+                                from modules.data_handler import update_item_field 
+                                if update_item_field(item.get('id'), "yeu_cau_sua", new_note):
+                                    st.rerun()
+                        
+                        with c_fix2:
+                            st.caption("Ảnh feedback 1")
+                            hien_thi_anh_vuong(item.get('img_sua_1'), "Feedback 1")
+                            k_fix1 = f"u_fix1_{item.get('id')}"
+                            st.file_uploader("Up ảnh 1", key=k_fix1, label_visibility="collapsed",
+                                             on_change=auto_upload_callback,
+                                             args=(k_fix1, item.get('id'), "fix1", "img_sua_1"))
+
+                        with c_fix3:
+                            st.caption("Ảnh feedback 2")
+                            hien_thi_anh_vuong(item.get('img_sua_2'), "Feedback 2")
+                            k_fix2 = f"u_fix2_{item.get('id')}"
+                            st.file_uploader("Up ảnh 2", key=k_fix2, label_visibility="collapsed",
+                                             on_change=auto_upload_callback,
+                                             args=(k_fix2, item.get('id'), "fix2", "img_sua_2"))
             else:
                 st.warning("Đơn này chưa có sản phẩm.")
-
 # ==============================================================================
 # 3. TRANG AI EDIT ẢNH (GEN AI)
 # ==============================================================================
