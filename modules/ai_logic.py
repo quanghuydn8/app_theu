@@ -53,9 +53,13 @@ def xuly_ai_gemini(text_input):
                   * Loại 2 (Quần): Quần short, Quần dài, Jogger...
                   * Loại 3 (Phụ kiện): Túi, Mũ, Khác...
                 + Logic cộng ngày:
-                  * Trường hợp A: Nếu đơn hàng chỉ chứa 1 Loại sản phẩm duy nhất (Ví dụ: Chỉ toàn Áo, hoặc chỉ toàn Quần) -> Ngày trả = Ngày hôm nay + 12 ngày.
-                  * Trường hợp B: Nếu đơn hàng mix từ 2 Loại trở lên (Ví dụ: Áo + Quần, Áo + Túi, Quần + Túi...) -> Ngày trả = Ngày hôm nay + 22 ngày.
-        3. XÁC ĐỊNH VẬN CHUYỂN & THANH TOÁN (Quan trọng):
+                  * Trường hợp A: Nếu đơn hàng chỉ chứa 1 Loại sản phẩm duy nhất (Ví dụ: Chỉ toàn Áo, hoặc chỉ toàn Quần) -> Ngày trả = Ngày đặt hàng + 12 ngày.
+                  * Trường hợp B: Nếu đơn hàng mix từ 2 Loại trở lên (Ví dụ: Áo + Quần, Áo + Túi, Quần + Túi...) -> Ngày trả = Ngày đặt hàng + 22 ngày.
+        3. XÁC ĐỊNH NGÀY ĐẶT (ngay_dat):
+           - Kiểm tra xem khách có nhắc đến "ngày đặt", "đơn ngày...", "hôm qua", "hôm kia"... không?
+           - Nếu CÓ: Trích xuất và định dạng YYYY-MM-DD.
+           - Nếu KHÔNG: Mặc định là ngày hôm nay ({today_str}).
+        4. XÁC ĐỊNH VẬN CHUYỂN & THANH TOÁN (Quan trọng):
            A. Vận chuyển (van_chuyen):
               - Nếu thấy "bay", "máy bay", "đường bay" -> "Bay ✈"
               - Nếu thấy "xe ôm", "grap", "hỏa tốc", "gấp", "nhanh" -> "Xe Ôm 🏍"
@@ -64,16 +68,19 @@ def xuly_ai_gemini(text_input):
            B. Hình thức thanh toán (httt):
               - Nếu thấy "0đ" -> "0đ 📷"
               - Mặc định còn lại (hoặc ghi COD, thu hộ) -> "Ship COD 💵"
-        4. XÁC ĐỊNH CO_HEN_NGAY (Quan trọng):
+        5. XÁC ĐỊNH CO_HEN_NGAY (Quan trọng):
            - Nếu khách dùng từ: "cần trước ngày", "lấy đúng ngày", "deadline", "gấp", "kịp ngày", "chốt ngày"...
            -> co_hen_ngay: true
            - Còn lại (để shop tự tính hoặc thoải mái thời gian) -> co_hen_ngay: false
-        5. OUTPUT JSON FORMAT:
+        6. XÁC ĐỊNH GHI CHÚ ĐẶC BIỆT (ghi_chu):
+           - Trích xuất tất cả thông tin quan trọng mà không nằm trong các trường trên (Ví dụ: khách cho nhiều SĐT, yêu cầu đóng gói, lưu ý về khách hàng, hoặc bất kỳ thông tin bổ sung nào).
+        7. OUTPUT JSON FORMAT:
         {{
             "customer_info": {{
                 "ten_khach": "...", "sdt": "...", "dia_chi": "...",
-                "ngay_tra": "YYYY-MM-DD", "shop": "...",
-                "tong_tien": 0, "da_coc": 0, "httt": "...", "van_chuyen": "...", "co_hen_ngay": false
+                "ngay_dat": "YYYY-MM-DD", "ngay_tra": "YYYY-MM-DD", "shop": "...",
+                "tong_tien": 0, "da_coc": 0, "httt": "...", "van_chuyen": "...", 
+                "co_hen_ngay": false, "ghi_chu": "..."
             }},
             "products": [ {{ "ten_sp": "...", "mau": "...", "size": "...", "kieu_theu": "..." }} ]
         }}
@@ -109,6 +116,7 @@ def xuly_ai_gemini(text_input):
                 "ten_khach_hang": cust.get("ten_khach", ""),
                 "so_dien_thoai": cust.get("sdt", ""),
                 "dia_chi": cust.get("dia_chi", ""),
+                "ngay_dat": cust.get("ngay_dat", None),
                 "ngay_tra": cust.get("ngay_tra", None),
                 "shop": shop,
                 "tong_tien": int(cust.get("tong_tien", 0)),
@@ -116,6 +124,7 @@ def xuly_ai_gemini(text_input):
                 "httt": cust.get("httt", "Ship COD"),
                 "van_chuyen": cust.get("van_chuyen", "Thường"),
                 "co_hen_ngay": cust.get("co_hen_ngay", False),
+                "ghi_chu": cust.get("ghi_chu", ""),
                 "items": products 
             }, response.text
             

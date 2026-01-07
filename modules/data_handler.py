@@ -295,6 +295,24 @@ def update_item_image(item_id, image_url, column_name="img_main"):
         print(f"❌ Lỗi cập nhật DB: {e}")
         return False
 
+def update_item_field(item_id, field_name, new_value):
+    """Cập nhật một trường bất kỳ của item trong bảng order_items"""
+    try:
+        supabase.table("order_items").update({field_name: new_value}).eq("id", item_id).execute()
+        return True
+    except Exception as e:
+        print(f"❌ Lỗi cập nhật field {field_name}: {e}")
+        return False
+
+def mark_order_as_printed(ma_don):
+    """Đánh dấu đơn hàng đã được in phiếu"""
+    try:
+        supabase.table("orders").update({"da_in": True}).eq("ma_don", ma_don).execute()
+        return True
+    except Exception as e:
+        print(f"❌ Lỗi mark_order_as_printed: {e}")
+        return False
+
 def upload_multiple_files_to_supabase(files, item_id):
     """
     Upload nhiều file thiết kế cùng lúc lên Supabase.

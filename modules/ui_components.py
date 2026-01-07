@@ -84,6 +84,7 @@ def hien_thi_form_tao_don():
                     st.session_state.form_ten_khach = extracted_data.get("ten_khach_hang", "")
                     st.session_state.form_sdt = extracted_data.get("so_dien_thoai", "")
                     st.session_state.form_dia_chi = extracted_data.get("dia_chi", "")
+                    st.session_state.form_ghi_chu = extracted_data.get("ghi_chu", "")
 
                     # Lấy danh sách sản phẩm từ AI
                     ai_items = extracted_data.get("items", [])
@@ -163,6 +164,10 @@ def hien_thi_form_tao_don():
             # Dia Chi
             if "form_dia_chi" not in st.session_state: st.session_state.form_dia_chi = defaults.get("dia_chi", "")
             dia_chi = st.text_area("Địa chỉ giao hàng", height=68, key="form_dia_chi")
+
+            # Ghi chu (Mới)
+            if "form_ghi_chu" not in st.session_state: st.session_state.form_ghi_chu = defaults.get("ghi_chu", "")
+            ghi_chu = st.text_input("Ghi chú đặc biệt", key="form_ghi_chu", placeholder="Vd: Khách có 2 SĐT, ship giờ hành chính...")
         with c2:
             # --- LOGIC CHỌN SHOP (LINE) ---
             shop_options = ["TGTĐ", "Inside", "Lanh Canh"]
@@ -171,18 +176,25 @@ def hien_thi_form_tao_don():
             selected_shop = st.selectbox("Shop (Line sản phẩm)", shop_options, index=shop_options.index(ai_shop_suggest))
             
             # --- MAP NGÀY THÁNG ---
+            ai_ngay_dat_str = defaults.get("ngay_dat")
             ai_ngay_tra_str = defaults.get("ngay_tra")
+            
+            val_ngay_dat = datetime.now()
             val_ngay_tra = datetime.now()
+
+            if ai_ngay_dat_str:
+                try: val_ngay_dat = datetime.strptime(ai_ngay_dat_str, "%Y-%m-%d")
+                except: pass
             if ai_ngay_tra_str:
                 try: val_ngay_tra = datetime.strptime(ai_ngay_tra_str, "%Y-%m-%d")
                 except: pass
             
-            ngay_dat = st.date_input("Ngày đặt", value=datetime.now())
+            ngay_dat = st.date_input("Ngày đặt", value=val_ngay_dat, format="DD/MM/YYYY")
             
             c_date, c_check = st.columns([2, 1])
             ai_co_hen = defaults.get("co_hen_ngay", False)
             with c_date:
-                ngay_tra = st.date_input("Ngày trả dự kiến", value=val_ngay_tra)
+                ngay_tra = st.date_input("Ngày trả dự kiến", value=val_ngay_tra, format="DD/MM/YYYY")
             with c_check:
                 st.write("")
                 st.write("") 
@@ -253,7 +265,8 @@ def hien_thi_form_tao_don():
                     "van_chuyen": van_chuyen,
                     "shop": selected_shop,
                     "trang_thai": "New",
-                    "co_hen_ngay": co_hen_ngay
+                    "co_hen_ngay": co_hen_ngay,
+                    "ghi_chu": ghi_chu
                 }
 
                 if save_full_order(order_data, items_list):
@@ -273,7 +286,15 @@ def hien_thi_form_tao_don():
 def render_order_management(df):
     st.markdown("<h2 style='text-align: center;'>📊 Dashboard Điều Hành</h2>", unsafe_allow_html=True)
 
-    # --- 0. CHUẨN HÓA DATA ---
+    # --- LOGIC AUTO PRINT (GỘP) ---
+    if "print_bulk_html" in st.session_state:
+        b_html = st.session_state.pop("print_bulk_html")
+        @st.dialog("🖨️ Đang in gộp...", width="large")
+        def show_bulk_auto_print(html_c):
+            st.success("✅ Đã cập nhật trạng thái: ĐÃ IN cho các đơn hàng được chọn.")
+            final_html = html_c + "<script>window.addEventListener('load', function() { setTimeout(function() { window.print(); }, 500); });</script>"
+            components.html(final_html, height=800, scrolling=True)
+        show_bulk_auto_print(b_html)
     STATUS_DONE = ['Hoàn thành', 'Done', 'Đã giao', 'Completed', 'Success']
     STATUS_CANCEL = ['Đã hủy', 'Cancelled', 'Hủy', 'Fail', 'Aborted']
     IGNORE_STATUSES = STATUS_DONE + STATUS_CANCEL 
@@ -363,33 +384,29 @@ def render_order_management(df):
             df_status = tai_danh_sach_trang_thai()
             options_status = df_status["Trạng thái"].tolist()
             
-            # Hàng 1: Trạng thái
-            status_filter = st.multiselect("Trạng thái:", options_status, placeholder="Chọn trạng thái...")
-            
-            # Hàng 2: Shop & Checkbox Urgent & Checkbox Chưa in
-            # [CẬP NHẬT] Chia thành 3 cột: Shop (2 phần) | Hẹn (1 phần) | Chưa In (1 phần)
-            c_f1, c_f2, c_f3 = st.columns([2, 1, 1])
-            
+            # Hàng 1: Trạng thái & Shop
+            c_f1, c_f2 = st.columns([2, 1])
             with c_f1:
+                status_filter = st.multiselect("Trạng thái:", options_status, placeholder="Chọn trạng thái...")
+            with c_f2:
                 shop_filter = st.multiselect("Shop:", ["TGTĐ", "Inside", "Lanh Canh"], placeholder="Chọn Shop")
             
-            with c_f2:
-                st.write("") # Spacer căn lề
-                st.write("")
-                loc_hen_ngay = st.checkbox("🚨 Đơn hẹn", value=False, help="Chỉ hiện đơn có hẹn ngày trả")
-
+            # Hàng 2: Lọc ngày & Checkboxes
+            c_f3, c_f4, c_f5, c_f6 = st.columns([1.5, 1.5, 0.7, 0.7])
             with c_f3:
-                st.write("") # Spacer căn lề
-                st.write("")
-                # [MỚI] Checkbox lọc đơn chưa in
-                loc_chua_in = st.checkbox("🖨️ Chưa in", value=False, help="Chỉ hiện đơn chưa in phiếu")
+                range_ngay_dat = st.date_input("Ngày Đặt:", value=[], format="DD/MM/YYYY")
+            with c_f4:
+                range_ngay_tra = st.date_input("Ngày Trả:", value=[], format="DD/MM/YYYY")
             
-            # Hàng 3: Ngày tháng
-            with st.expander("📅 Lọc theo ngày (Đặt / Trả)"):
-                range_ngay_dat = st.date_input("Ngày Đặt:", value=[], label_visibility="collapsed")
-                st.caption("Khoảng ngày đặt")
-                range_ngay_tra = st.date_input("Ngày Trả:", value=[], label_visibility="collapsed")
-                st.caption("Khoảng ngày trả")
+            with c_f5:
+                st.write("") # Spacer để căn lề với date input
+                st.write("")
+                loc_hen_ngay = st.checkbox("🚨 Đơn hẹn", value=False)
+            
+            with c_f6:
+                st.write("") # Spacer
+                st.write("")
+                loc_chua_in = st.checkbox("🖨️ Chưa in", value=False)
     # =================================================================================
     # 3. XỬ LÝ DATA (APPLY FILTER)
     # =================================================================================
@@ -471,12 +488,20 @@ def render_order_management(df):
             )
             df_show = df_show.sort_values(by=['is_urgent_active', 'created_at'], ascending=[False, False])
             
-            df_show['deadline'] = df_show.apply(
-                lambda x: "🚨 " + str(x['ngay_tra']) if x['is_urgent_active'] else str(x.get('ngay_tra')), 
-                axis=1
-            )
+            def format_deadline(row):
+                try:
+                    d_obj = pd.to_datetime(row['ngay_tra'])
+                    d_str = d_obj.strftime("%d/%m/%Y")
+                    return f"🚨 {d_str}" if row['is_urgent_active'] else d_str
+                except:
+                    return str(row.get('ngay_tra', ''))
+
+            df_show['deadline'] = df_show.apply(format_deadline, axis=1)
         else:
-            df_show['deadline'] = df_show.get('ngay_tra', '')
+            def format_simple(row):
+                try: return pd.to_datetime(row['ngay_tra']).strftime("%d/%m/%Y")
+                except: return str(row.get('ngay_tra', ''))
+            df_show['deadline'] = df_show.apply(format_simple, axis=1)
 
         # Display Icon
         if 'da_in' in df_show.columns:
@@ -537,7 +562,6 @@ def render_order_management(df):
                     st.warning("Chưa chọn!")
                 else:
                     try:
-                        # ...logic in gộp (giữ nguyên hoặc copy lại)...
                         selected_rows = df_display.iloc[selected_indices]
                         selected_ma_don = []
                         for _, row in selected_rows.iterrows():
@@ -546,22 +570,28 @@ def render_order_management(df):
                             selected_ma_don.append(raw_ma)
                         
                         if selected_ma_don:
-                            # Fetch data
                             orders_data_list = []
-                            from modules.data_handler import get_order_details, mark_order_as_printed
+                            from modules.data_handler import get_order_details
                             with st.spinner(f"Xử lý {len(selected_ma_don)} đơn..."):
                                 for ma in selected_ma_don:
-                                    mark_order_as_printed(ma)
+                                    # KHÔNG update DB ở đây nữa
                                     o_info, o_items = get_order_details(ma)
                                     if o_info: orders_data_list.append({"order_info": o_info, "items": o_items})
                             
                             if orders_data_list:
                                 combined_html = generate_combined_print_html(orders_data_list)
                                 @st.dialog("🖨️ Xem trước bản in (Gộp)", width="large")
-                                def show_combined_print_preview(html_content):
-                                    st.caption("Bấm nút 'IN (TẤT CẢ)' màu xanh bên dưới để in.")
+                                def show_combined_print_preview(html_content, ma_list):
+                                    st.caption("Kiểm tra kỹ các đơn trước khi bấm xác nhận.")
+                                    if st.button("🚀 XÁC NHẬN & IN TẤT CẢ", type="primary", use_container_width=True):
+                                        from modules.data_handler import mark_order_as_printed
+                                        with st.spinner("Đang cập nhật trạng thái..."):
+                                            for m in ma_list:
+                                                mark_order_as_printed(m)
+                                        st.session_state["print_bulk_html"] = html_content
+                                        st.rerun()
                                     components.html(html_content, height=800, scrolling=True)
-                                show_combined_print_preview(combined_html)
+                                show_combined_print_preview(combined_html, selected_ma_don)
                     except Exception as e: st.error(f"Lỗi: {e}")
 
         with c_btn_excel:
@@ -680,8 +710,8 @@ def render_order_detail_view(ma_don):
                 try: d_tra = datetime.strptime(order_info.get('ngay_tra', '')[:10], "%Y-%m-%d").date()
                 except: d_tra = datetime.now()
 
-                new_ngay_dat = c_d1.date_input("Ngày đặt", value=d_dat)
-                new_ngay_tra = c_d2.date_input("Ngày trả", value=d_tra)
+                new_ngay_dat = c_d1.date_input("Ngày đặt", value=d_dat, format="DD/MM/YYYY")
+                new_ngay_tra = c_d2.date_input("Ngày trả", value=d_tra, format="DD/MM/YYYY")
                 
                 # Tài chính
                 st.markdown("---")
@@ -698,13 +728,16 @@ def render_order_detail_view(ma_don):
                 if current_st not in options_status: options_status.append(current_st)
                 new_trang_thai = st.selectbox("Trạng thái", options_status, index=options_status.index(current_st))
                 
+                new_ghi_chu = st.text_input("Ghi chú đặc biệt", value=order_info.get('ghi_chu', ''))
+
                 # Nút Lưu Info
                 if st.form_submit_button("💾 Lưu thông tin", type="primary"):
                     update_data = {
                         "shop": new_shop, "ten_khach": new_ten, "sdt": new_sdt, 
                         "dia_chi": new_dia_chi, "ngay_dat": new_ngay_dat.isoformat(), 
                         "ngay_tra": new_ngay_tra.isoformat(), "thanh_tien": new_tong, 
-                        "da_coc": new_coc, "con_lai": new_tong - new_coc, "trang_thai": new_trang_thai
+                        "da_coc": new_coc, "con_lai": new_tong - new_coc, "trang_thai": new_trang_thai,
+                        "ghi_chu": new_ghi_chu
                     }
                     if update_order_info(ma_don, update_data):
                         st.success("Đã cập nhật!"); time.sleep(0.5); st.rerun()
@@ -716,20 +749,45 @@ def render_order_detail_view(ma_don):
             if order_info.get('da_in'):
                 st.caption("✅ Đơn này đã từng được in phiếu.")
 
-            if st.button("🖨️ XEM & IN PHIẾU", use_container_width=True, key=f"btn_print_{ma_don}"):
-                # 1. Gọi hàm đánh dấu đã in vào Database ngay khi bấm nút
-                # (Import hàm này từ data_handler nhé)
-                mark_order_as_printed(ma_don)
+            # --- LOGIC IN ẤN: AUTO OPEN DIALOG KHI VỪA UPDATE XONG ---
+            if f"print_after_confirm_{ma_don}" in st.session_state:
+                p_html = st.session_state.pop(f"print_after_confirm_{ma_don}")
                 
-                # 2. Tạo nội dung HTML
+                @st.dialog("🖨️ Đang in phiếu...", width="large")
+                def show_auto_print_dialog(html_c):
+                    st.success("✅ Đã cập nhật trạng thái: ĐÃ IN")
+                    # Inject JS Print
+                    final_html = html_c + """
+                    <script>
+                        window.addEventListener('load', function() {
+                            setTimeout(function() { window.print(); }, 500); 
+                        });
+                    </script>
+                    """
+                    components.html(final_html, height=800, scrolling=True)
+                
+                show_auto_print_dialog(p_html)
+
+            # Nút mở preview thường
+            if st.button("🖨️ XEM & IN PHIẾU", use_container_width=True, key=f"btn_print_{ma_don}"):
                 html_content = generate_print_html(order_info, items)
                 
                 @st.dialog("🖨️ Xem trước bản in", width="large")
-                def show_print_preview(html):
-                    st.caption("Bấm nút 'IN PHIẾU NGAY' màu xanh bên dưới để kết nối máy in.")
+                def show_preview_dialog(html, m_don):
+                    st.caption("Kiểm tra nội dung phiếu trước khi in.")
+                    
+                    # Nút GỘP: Vừa update, vừa in
+                    if st.button("🚀 IN PHIẾU NGAY (Lưu & In)", key=f"btn_real_print_{m_don}", type="primary", use_container_width=True):
+                        # 1. Update DB
+                        mark_order_as_printed(m_don)
+                        
+                        # 2. Lưu HTML vào session để reopen dialog sau khi rerun
+                        st.session_state[f"print_after_confirm_{m_don}"] = html
+                        st.rerun()
+
                     components.html(html, height=800, scrolling=True)
                 
-                show_print_preview(html_content)
+                show_preview_dialog(html_content, ma_don)
                 
 # ================= CỘT PHẢI: SẢN PHẨM (DYNAMIC SHOP) =================
         with c_items:

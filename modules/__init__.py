@@ -11,6 +11,8 @@ from .data_handler import (
     luu_danh_sach_trang_thai,
     upload_image_to_supabase, # <--- Hàm mới
     update_item_image,        # <--- Hàm mới
+    update_item_field,
+    mark_order_as_printed,
     kiem_tra_ket_noi
 )
 

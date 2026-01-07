@@ -156,9 +156,6 @@ def generate_print_html(order_info, items):
     <html>
     <head>{_get_css()}</head>
     <body>
-        <div class="no-print" style="position: fixed; top: 10px; right: 10px; z-index: 9999;">
-            <button onclick="window.print()" style="background-color:#2563eb; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ IN PHIẾU NGAY</button>
-        </div>
         {body_content}
     </body>
     </html>
@@ -183,9 +180,6 @@ def generate_combined_print_html(orders_data_list):
     <html>
     <head>{_get_css()}</head>
     <body>
-        <div class="no-print" style="position: fixed; top: 10px; right: 10px; z-index: 9999;">
-            <button onclick="window.print()" style="background-color:#2563eb; color:white; padding:10px 20px; border:none; border-radius:5px; cursor:pointer; font-weight:bold;">🖨️ IN (TẤT CẢ)</button>
-        </div>
         {all_bodies}
     </body>
     </html>
