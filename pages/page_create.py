@@ -37,75 +37,105 @@ class OrderCreatePage:
             ui.label('📝 Tạo Đơn Hàng Mới').classes('text-2xl font-bold text-slate-700 mb-4')
 
             # ======================================================
-            # PHẦN 1: AI TRỢ LÝ (EXPANSION)
+            # PHẦN 1: AI TRỢ LÝ (DẠNG CARD CỐ ĐỊNH)
             # ======================================================
-            with ui.expansion('✨ AI Trợ lý & Debugger', icon='auto_awesome').classes('w-full border rounded-lg mb-4 bg-blue-50') as ai_expand:
-                with ui.row().classes('w-full items-start'):
-                    self.ai_input = ui.textarea(
-                        placeholder="Paste đoạn chat vào đây (Ví dụ: 'Khách Tùng 090... áo trắng size L TGTD')...",
-                    ).classes('w-full h-24 bg-white')
+            # Thay ui.expansion bằng ui.card để luôn hiển thị
+            with ui.card().classes('w-full p-4 mb-4 border rounded-lg bg-blue-50 shadow-sm gap-3'):
                 
-                with ui.row().classes('w-full justify-between mt-2'):
-                    self.debug_toggle = ui.switch('Chế độ Debug').props('dense')
-                    ui.button('🪄 Trích xuất thông tin', on_click=self.process_ai).classes('bg-blue-600 text-white')
+                # Tiêu đề
+                with ui.row().classes('w-full items-center gap-2'):
+                    ui.icon('auto_awesome', size='sm').classes('text-blue-600')
+                    ui.label('AI Trợ lý & Debugger').classes('font-bold text-slate-700 text-lg')
+
+                # Ô nhập liệu (Input)
+                # Thêm class 'mb-1' để tạo khoảng cách với nút bên dưới, tránh bị đè
+                self.ai_input = ui.textarea(
+                    placeholder="Paste đoạn chat vào đây (Ví dụ: 'Khách Tùng 090... áo trắng size L TGTD')...",
+                ).classes('w-full bg-white').props('outlined rounded input-style="min-height: 80px;"') 
+                
+                # Hàng chứa nút bấm và Switch
+                with ui.row().classes('w-full justify-between items-center'):
+                    self.debug_toggle = ui.switch('Chế độ Debug').props('dense color=red')
+                        
+                    ui.button('🪄 Trích xuất thông tin', on_click=self.process_ai)\
+                        .classes('bg-blue-600 text-white shadow-md')\
+                        .props('no-caps') # no-caps để chữ không bị viết hoa toàn bộ
                 
                 # Khu vực hiển thị kết quả Debug
-                self.debug_container = ui.column().classes('w-full mt-2 hidden')
-
+                self.debug_container = ui.column().classes('w-full mt-2 hidden p-2 border border-dashed border-slate-400 rounded bg-slate-100')
+            
+    # ======================================================
+            # PHẦN 2: THÔNG TIN (LAYOUT 2 CARD RIÊNG BIỆT)
             # ======================================================
-            # PHẦN 2: THÔNG TIN KHÁCH HÀNG & ĐƠN HÀNG
-            # ======================================================
-            with ui.card().classes('w-full p-4 mb-4 shadow-sm'):
-                ui.label('1. Thông tin Khách hàng').classes('font-bold text-slate-700')
+            # Dùng ui.row để xếp 2 card nằm ngang. items-start để chúng không bị kéo giãn chiều cao
+            with ui.row().classes('w-full gap-4 items-start mb-4'):
                 
-                # Ô Tìm kiếm khách hàng (Autocomplete)
-                ui.select(
-                    options=self.customer_list,
-                    with_input=True, # Cho phép gõ để tìm
-                    label='🔍 Tìm khách cũ (Gõ SĐT hoặc Tên)',
-                    on_change=self.on_customer_select
-                ).classes('w-full mb-2').props('clearable')
+                # --- CARD 1: THÔNG TIN KHÁCH HÀNG (BÊN TRÁI) ---
+                with ui.card().classes('flex-1 p-4 shadow-sm border border-slate-200'):
+                    ui.label('1. Thông tin Khách hàng').classes('font-bold text-slate-700 mb-2')
+                    
+                    # Ô Tìm kiếm khách
+                    ui.select(
+                        options=self.customer_list,
+                        with_input=True,
+                        label='🔍 Tìm khách cũ (Gõ SĐT/Tên)',
+                        on_change=self.on_customer_select
+                    ).classes('w-full mb-3').props('clearable behavior="menu"')
 
-                # Form nhập liệu 2 cột
-                with ui.row().classes('w-full gap-4'):
-                    # Cột Trái: Thông tin khách
-                    with ui.column().classes('flex-1'):
-                        self.input_ma_don = ui.input('Mã đơn (Để trống = Tự sinh)').props('placeholder="Tự động..."').classes('w-full')
-                        self.input_ten = ui.input('Tên khách hàng *').classes('w-full')
-                        self.input_sdt = ui.input('Số điện thoại').classes('w-full')
-                        self.input_dia_chi = ui.textarea('Địa chỉ giao hàng').props('rows=3').classes('w-full')
-                        self.input_ghi_chu = ui.input('Ghi chú đơn (Ship giờ HC...)').classes('w-full')
+                    # Các ô nhập liệu
+                    self.input_ma_don = ui.input('Mã đơn (Tự sinh)').props('placeholder="Để trống tự tạo..."').classes('w-full')
+                    self.input_ten = ui.input('Tên khách hàng *').classes('w-full')
+                    self.input_sdt = ui.input('Số điện thoại').classes('w-full')
+                    self.input_dia_chi = ui.textarea('Địa chỉ giao hàng').props('rows=3').classes('w-full')
+                    self.input_ghi_chu = ui.input('Ghi chú đơn').classes('w-full')
 
-                    # Cột Phải: Thông tin đơn
-                    with ui.column().classes('flex-1'):
-                        # Shop & Ngày tháng
+                # --- CARD 2: THÔNG TIN ĐƠN HÀNG (BÊN PHẢI) ---
+                with ui.card().classes('flex-1 p-4 shadow-sm border border-slate-200'):
+                    ui.label('2. Cấu hình Đơn hàng').classes('font-bold text-slate-700 mb-2')
+                    
+                    with ui.column().classes('w-full gap-3'): # Dùng gap-3 để thoáng hơn
+                        
+                        # 1. Shop
                         self.select_shop = ui.select(["Inside", "TGTĐ", "Lanh Canh"], value="Inside", label="Shop / Line").classes('w-full')
                         
-                        with ui.row().classes('w-full'):
-                            # Date Picker: Ngày đặt
-                            self.input_ngay_dat = ui.input('Ngày đặt').classes('w-1/2')
+    # 2. Ngày tháng (Đặt trên 1 hàng)
+                        with ui.row().classes('w-full gap-2 no-wrap'):
+                            
+                            # --- Input 1: Ngày Đặt ---
+                            self.input_ngay_dat = ui.input('Ngày đặt').classes('flex-1')
+                            self.input_ngay_dat.value = datetime.now().strftime('%Y-%m-%d')
+                            
+                            # 1. Tạo Slot chứa Icon
                             with self.input_ngay_dat.add_slot('append'):
-                                ui.icon('event').class_name('cursor-pointer').on('click', lambda: menu_dat.open())
+                                # [FIX] Sửa .class_name() thành .classes()
+                                ui.icon('event').classes('cursor-pointer').on('click', lambda: menu_dat.open())
+                            
+                            # 2. Tạo Menu
+                            with self.input_ngay_dat:
                                 with ui.menu() as menu_dat:
-                                    ui.date().bind_value(self.input_ngay_dat)
-                            self.input_ngay_dat.value = datetime.now().strftime('%Y-%m-%d')  # Default hôm nay
+                                    ui.date().bind_value(self.input_ngay_dat).on('input', lambda: menu_dat.close())
 
-                            # Date Picker: Ngày trả
-                            self.input_ngay_tra = ui.input('Ngày trả').classes('w-1/2')
-                            with self.input_ngay_tra.add_slot('append'):
-                                ui.icon('event').class_name('cursor-pointer').on('click', lambda: menu_tra.open())
-                                with ui.menu() as menu_tra:
-                                    ui.date().bind_value(self.input_ngay_tra)
+                            # --- Input 2: Ngày Trả ---
+                            self.input_ngay_tra = ui.input('Ngày trả').classes('flex-1')
                             self.input_ngay_tra.value = datetime.now().strftime('%Y-%m-%d')
-                        
-                        self.chk_co_hen = ui.checkbox('🚨 Khách có hẹn ngày lấy?').classes('mt-2')
+                            
+                            # 1. Tạo Slot chứa Icon
+                            with self.input_ngay_tra.add_slot('append'):
+                                # [FIX] Sửa .class_name() thành .classes()
+                                ui.icon('event').classes('cursor-pointer').on('click', lambda: menu_tra.open())
+                            
+                            # 2. Tạo Menu
+                            with self.input_ngay_tra:
+                                with ui.menu() as menu_tra:
+                                    ui.date().bind_value(self.input_ngay_tra).on('input', lambda: menu_tra.close())
 
-                        # Thanh toán & Vận chuyển
-                        with ui.row().classes('w-full mt-2'):
-                            self.select_httt = ui.select(["Ship COD 💵", "Ck trước 💳", "0đ 📷"], value="Ship COD 💵", label="Thanh toán").classes('w-1/2')
-                            self.select_vc = ui.select(["Thường", "Xe Ôm 🏍", "Bay ✈"], value="Thường", label="Vận chuyển").classes('w-1/2')
+                        # 3. Checkbox
+                        self.chk_co_hen = ui.checkbox('🚨 Khách hẹn ngày lấy (Đơn gấp)')
 
-            # ======================================================
+                        # 4. Thanh toán & Vận chuyển
+                        with ui.row().classes('w-full gap-2 no-wrap'):
+                            self.select_httt = ui.select(["Ship COD 💵", "Ck trước 💳", "0đ 📷"], value="Ship COD 💵", label="Thanh toán").classes('flex-1')
+                            self.select_vc = ui.select(["Thường", "Xe Ôm 🏍", "Bay ✈"], value="Thường", label="Vận chuyển").classes('flex-1')           # ======================================================
             # PHẦN 3: DANH SÁCH SẢN PHẨM (DYNAMIC LIST)
             # ======================================================
             with ui.card().classes('w-full p-4 mb-4 shadow-sm'):
