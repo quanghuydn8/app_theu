@@ -590,26 +590,79 @@ class OrderPage:
 
     async def bulk_print(self):
         rows = await self.grid.get_selected_rows()
-        if not rows: return
+        if not rows:
+            ui.notify('Vui lòng chọn ít nhất 1 đơn hàng!', type='warning')
+            return
+            
         ma_list = [r['ma_don'] for r in rows]
-        data = []
+        data_to_print = []
+        invalid_list = []
+        
+        ui.notify(f'Đang kiểm tra {len(ma_list)} đơn hàng...', spinner=True)
+        
         for ma in ma_list:
             o, i = get_order_details(ma)
-            if o: data.append({"order_info": o, "items": i})
+            if not o: continue
+            
+            can_print, msg = self.check_print_permission(o)
+            if not can_print:
+                invalid_list.append(f"{ma}: {msg}")
+            else:
+                data_to_print.append({"order_info": o, "items": i})
+
+        # Nếu có bất kỳ đơn nào không đủ điều kiện -> Không cho in cả list
+        if invalid_list:
+            msg_full = "⚠️ Không thể in bulk vì có đơn chưa đủ điều kiện:\n" + "\n".join(invalid_list[:5])
+            if len(invalid_list) > 5: msg_full += f"\n... và {len(invalid_list)-5} đơn khác."
+            
+            with ui.dialog() as dialog, ui.card():
+                ui.label('⚠️ Lỗi in hàng loạt').classes('text-lg font-bold text-red-600')
+                ui.label(msg_full).classes('whitespace-pre-wrap text-sm')
+                ui.button('Đã hiểu', on_click=dialog.close).classes('w-full')
+            dialog.open()
+            return
+
+        # Nếu tất cả hợp lệ -> Tiến hành in
+        for ma in ma_list:
             mark_order_as_printed(ma)
-        html = generate_combined_print_html(data)
-        ui.download(html.encode('utf-8'), 'print_bulk.html')
+            
+        html = generate_combined_print_html(data_to_print)
+        # Sử dụng base64 để tránh lỗi ký tự đặc biệt khi download HTML trực tiếp
+        import base64
+        b64_html = base64.b64encode(html.encode('utf-8')).decode()
+        ui.download(f'data:text/html;base64,{b64_html}', f'In_Gop_{len(ma_list)}_don.html')
+        ui.notify(f'🎉 Đã chuẩn bị bản in cho {len(ma_list)} đơn hàng!', type='positive')
+        self.refresh_data()
 
     async def bulk_export_excel(self):
         rows = await self.grid.get_selected_rows()
-        if not rows: return
+        if not rows:
+            ui.notify('Vui lòng chọn đơn hàng!', type='warning')
+            return
+            
         ma_list = [r['ma_don'] for r in rows]
         data = []
+        allow_auto_update = ["Mới", "Đã xác nhận", "New"]
+        
+        ui.notify('Đang chuẩn bị dữ liệu Excel...', spinner=True)
+        
         for ma in ma_list:
             o, i = get_order_details(ma)
-            if o: data.append({"order_info": o, "items": i})
+            if o:
+                data.append({"order_info": o, "items": i})
+                
+                # Logic: Xuất Excel -> Chuyển sang "Chờ sản xuất" (Giống bản Streamlit)
+                if o.get('trang_thai') in allow_auto_update:
+                    update_order_info(ma, {"trang_thai": "Chờ sản xuất"})
+        
         buffer = export_orders_to_excel(data)
-        if buffer: ui.download(buffer, 'Export.xlsx')
+        if buffer:
+            fname = f"Excel_Nobita_{datetime.now().strftime('%d_%m')}.xlsx"
+            ui.download(buffer, fname)
+            ui.notify('✅ Đã xuất Excel và cập nhật trạng thái!', type='positive')
+            self.refresh_data()
+        else:
+            ui.notify('Lỗi khi tạo file Excel', type='negative')
 
     def confirm_order(self):
         self.update_status_and_reload("Đã xác nhận")

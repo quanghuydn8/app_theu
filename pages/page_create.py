@@ -1,5 +1,6 @@
-from nicegui import ui
+from nicegui import ui, run
 from datetime import datetime
+import json
 import time
 
 # --- IMPORT TỪ BACKEND ---
@@ -62,7 +63,9 @@ class OrderCreatePage:
                         .props('no-caps') # no-caps để chữ không bị viết hoa toàn bộ
                 
                 # Khu vực hiển thị kết quả Debug
-                self.debug_container = ui.column().classes('w-full mt-2 hidden p-2 border border-dashed border-slate-400 rounded bg-slate-100')
+                # [FIX] Dùng bind_visibility để nó tự hiện/ẩn khi bấm Switch
+                self.debug_container = ui.column().classes('w-full mt-2 p-2 border border-dashed border-slate-400 rounded bg-slate-100') \
+                    .bind_visibility_from(self.debug_toggle, 'value')
             
     # ======================================================
             # PHẦN 2: THÔNG TIN (LAYOUT 2 CARD RIÊNG BIỆT)
@@ -246,22 +249,19 @@ class OrderCreatePage:
 
         ui.notify('AI đang phân tích...', type='info', spinner=True)
         
-        # Gọi Backend (Hàm này có thể chạy lâu nên dùng run_io_bound nếu cần, ở đây gọi trực tiếp)
-        extracted_data, raw_text = xuly_ai_gemini(text)
+        # [FIX] Dùng run.io_bound để không chặn Event Loop, tránh lỗi "Lost connection"
+        extracted_data, raw_text = await run.io_bound(xuly_ai_gemini, text)
 
-        # Hiển thị Debug (Enhanced - match Streamlit version)
+        # Hiển thị Debug (Luôn cập nhật nội dung, việc hiện/ẩn đã có bind_visibility lo)
         self.debug_container.clear()
-        if self.debug_toggle.value:
-            self.debug_container.remove_classes('hidden')
-            with self.debug_container:
-                with ui.row().classes('w-full gap-4'):
-                    with ui.column().classes('flex-1'):
-                        ui.label('🔍 AI Raw Output:').classes('font-bold text-sm')
-                        ui.code(raw_text, language='json').classes('text-xs')
-                    with ui.column().classes('flex-1'):
-                        ui.label('🐍 Python Mapped Data:').classes('font-bold text-sm')
-                        import json
-                        ui.code(json.dumps(extracted_data, ensure_ascii=False, indent=2) if extracted_data else '{}', language='json').classes('text-xs')
+        with self.debug_container:
+            with ui.row().classes('w-full gap-4'):
+                with ui.column().classes('flex-1'):
+                    ui.label('🔍 AI Raw Output:').classes('font-bold text-sm')
+                    ui.code(str(raw_text), language='json').classes('text-xs')
+                with ui.column().classes('flex-1'):
+                    ui.label('🐍 Python Mapped Data:').classes('font-bold text-sm')
+                    ui.code(json.dumps(extracted_data, ensure_ascii=False, indent=2) if extracted_data else '{}', language='json').classes('text-xs')
 
         if extracted_data:
             # Điền vào form (Mapping data)
