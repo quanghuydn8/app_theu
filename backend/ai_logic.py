@@ -12,20 +12,26 @@ load_dotenv()
 def configure_ai():
     """
     Cấu hình Google Gemini AI từ biến môi trường.
-    Đã loại bỏ fallback sang streamlit.secrets để code độc lập.
+    Hỗ trợ cả .env và Streamlit secrets (nếu có).
     """
     api_key = os.getenv("GOOGLE_API_KEY")
-    
+    if not api_key:
+        try:
+            import streamlit as st
+            api_key = st.secrets["GOOGLE_API_KEY"]
+        except:
+            pass
+
     if api_key:
         genai.configure(api_key=api_key)
         return True
     else:
-        print("❌ Lỗi: Không tìm thấy GOOGLE_API_KEY trong file .env")
+        print("❌ Lỗi: Không tìm thấy GOOGLE_API_KEY")
         return False
 
 def xuly_ai_gemini(text_input):
     """
-    Hàm trích xuất thông tin đơn hàng và xác định Shop từ đoạn chat.
+    Hàm trích xuất thông tin đơn hàng và xác định Shop.
     """
     if not configure_ai(): 
         return None, "Lỗi: Chưa cấu hình Google API Key"
@@ -81,13 +87,13 @@ def xuly_ai_gemini(text_input):
                 "tong_tien": 0, "da_coc": 0, "httt": "...", "van_chuyen": "...", 
                 "co_hen_ngay": false, "ghi_chu": "..."
             }},
-            "products": [ {{ "ten_sp": "...", "mau": "...", "size": "...", "kieu_theu": "..." }} ]
+            "products": [ {{ "ten_sp": "...", "mau": "...", "size": "...", "kieu_theu": "...", "ghi_chu_sp": "..." }} ]
         }}
         """
         
-        # Cấu hình Model
+        # Cấu hình Model - Đồng bộ với modules/ai_logic.py
         model = genai.GenerativeModel(
-            model_name='gemini-2.5-flash', # Update lên bản 2.0 Flash mới nhất nếu có, hoặc giữ 1.5-flash
+            model_name='gemini-2.5-flash', 
             system_instruction=system_instruction,
             generation_config={"response_mime_type": "application/json"}
         )
@@ -101,7 +107,8 @@ def xuly_ai_gemini(text_input):
             cust = data.get("customer_info", {}) or data
             products = data.get("products", []) or [{
                 "ten_sp": data.get("san_pham", ""), "mau": data.get("mau_sac", ""), 
-                "size": data.get("size", ""), "kieu_theu": data.get("yeu_cau_theu", "")
+                "size": data.get("size", ""), "kieu_theu": data.get("yeu_cau_theu", ""),
+                "ghi_chu_sp": data.get("ghi_chu_sp", "")
             }]
             
             # Chuẩn hóa Shop
@@ -134,29 +141,34 @@ def xuly_ai_gemini(text_input):
 def gen_anh_mau_theu(image_input_bytes, custom_prompt):
     """
     Hàm tạo ảnh mẫu thêu bằng Google Gemini 3 Image Preview.
-    Gửi: [Prompt + Ảnh Upload + Ảnh Style Ref]
+    Đúng logic từ modules/ai_logic.py
     """
+    with open("ai_error.log", "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now()}: ENTRY gen_anh_mau_theu\n")
     if not configure_ai(): 
+        print("❌ Chưa cấu hình AI")
         return None
     
     try:
-        # 1. Cấu hình model Image Generation
-        model = genai.GenerativeModel(model_name='gemini-2.0-flash') # Hoặc gemini-pro-vision tùy key
+        # 1. Cấu hình model Image Generation (Quan trọng: Model cũ hoạt động tốt hơn cho task này)
+        model = genai.GenerativeModel(model_name='gemini-3-pro-image-preview')
         
         # 2. Load ảnh input
         img_input = Image.open(io.BytesIO(image_input_bytes))
         
         # 3. Load ảnh style reference
         style_img = None
-        style_path = "style_mau.jpg" # Đảm bảo file này có trong thư mục gốc
+        style_path = "style_mau.jpg"
         
         if os.path.exists(style_path):
             try:
                 style_img = Image.open(style_path)
+                print("✅ Đã load style_mau.jpg")
             except: pass
         
-        # 4. Prompt Engineering
-        full_prompt = f"tạo file thêu cho phần đầu của con vật, giữ đúng góc mặt, màu lông, chi tiết. tương tự như mẫu file thêu ở hình mẫu"
+        # 4. Prompt Engineering cho Thêu (Logic cũ)
+        full_prompt = f"""tạo file thêu cho phần đầu của con vật, giữ đúng góc mặt, màu lông, chi tiết. tương tự như mẫu file thêu ở hình mẫu
+        """
         
         # 5. Payload
         content_parts = [full_prompt, img_input]
@@ -169,30 +181,34 @@ def gen_anh_mau_theu(image_input_bytes, custom_prompt):
         response = model.generate_content(content_parts)
         
         # 7. Extract Image Data
-        # Lưu ý: Gemini trả về inline_data hoặc link tùy phiên bản, cần check kỹ output thực tế
-        # Đoạn code dưới đây giả định trả về inline_data như bản cũ
         if response.candidates:
             for part in response.candidates[0].content.parts:
                 if hasattr(part, 'inline_data') and part.inline_data:
                     print("✅ Đã nhận được ảnh từ AI!")
+                    with open("ai_error.log", "a", encoding="utf-8") as f:
+                        f.write(f"{datetime.now()}: SUCCESS gen_anh_mau_theu: Received {len(part.inline_data.data)} bytes\n")
                     return part.inline_data.data
                 
         print("⚠️ Không tìm thấy ảnh trong response.")
         return None
         
     except Exception as e:
+        with open("ai_error.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now()}: ERROR gen_anh_mau_theu: {str(e)}\n")
         print(f"❌ Lỗi gen ảnh AI: {e}")
         return None
 
 def generate_image_from_ref(image_bytes, prompt_text):
     """
     Tạo ảnh mới dựa trên ảnh gốc và câu lệnh prompt.
+    Đúng logic từ modules/ai_logic.py
     """
     if not configure_ai():
+        print("❌ Chưa cấu hình AI")
         return None
 
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        model = genai.GenerativeModel('gemini-3-pro-image-preview')
         img_input = Image.open(io.BytesIO(image_bytes))
         content = [prompt_text, img_input]
         

@@ -240,6 +240,9 @@ def compress_image(image_file, max_width=1024):
     Hàm nén ảnh: Resize lại và giảm chất lượng xuống mức hợp lý
     """
     try:
+        # Nếu là bytes, bọc vào BytesIO để PIL có thể đọc được
+        if isinstance(image_file, bytes):
+            image_file = io.BytesIO(image_file)
         # Mở ảnh bằng PIL
         img = Image.open(image_file)
         

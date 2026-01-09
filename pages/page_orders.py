@@ -4,6 +4,11 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import traceback
+import html
+import base64
+import json
+import time
+import asyncio
 
 # --- IMPORT TỪ BACKEND ---
 from backend.data_handler import (
@@ -24,6 +29,14 @@ from backend.printer import generate_combined_print_html
 from backend.exporter import export_orders_to_excel
 
 class OrderPage:
+    def __init__(self):
+        self.current_order = None 
+        self.current_items = []
+        self.df_original = pd.DataFrame()
+        self.multi_upload_state = {} # {item_id: {'last_time': 0, 'urls': []}}
+        self.build_ui()
+
+    # --- 1. LOGIC KIỂM TRA ĐIỀU KIỆN IN ---
     def check_print_permission(self, order):
         """Kiểm tra xem đơn hàng có đủ điều kiện in không"""
         if not order: return False, "Chưa chọn đơn"
@@ -42,20 +55,149 @@ class OrderPage:
                 return False, f"Đơn Design phải từ 'Đã duyệt thiết kế'. Trạng thái: {stt}"
         
         return True, "Đủ điều kiện in"
-    
-    def __init__(self):
-        self.current_order = None 
-        self.current_items = []
-        self.df_original = pd.DataFrame()
-        self.build_ui()
+
+    # --- 2. POPUP PREVIEW & IN ---
+    def show_print_preview(self, ma_list):
+        """Hiện Popup xem trước bản in và nút Xác nhận"""
+        try:
+            # 1. Chuẩn bị dữ liệu
+            data_to_print = []
+            for ma in ma_list:
+                o, i = get_order_details(ma)
+                if o: data_to_print.append({"order_info": o, "items": i})
+            
+            if not data_to_print: 
+                ui.notify("Không lấy được dữ liệu in!", type='negative')
+                return
+
+            # 2. Sinh HTML
+            html_content = generate_combined_print_html(data_to_print)
+            
+            # --- ĐỊNH NGHĨA HÀM CONFIRM Ở ĐÂY ĐỂ TRÁNH LỖI INDENT ---
+            async def confirm_print():
+                try:
+                    ui.notify('⏳ Đang gửi lệnh in...', spinner=True)
+                    
+                    # A. Cập nhật DB
+                    for ma in ma_list:
+                        mark_order_as_printed(ma)
+                    
+                    # B. Mã hóa HTML sang Base64
+                    b64_bytes = base64.b64encode(html_content.encode('utf-8'))
+                    b64_str = b64_bytes.decode('utf-8')
+                    
+                    # C. Kích hoạt lệnh in qua JS
+                    js_code = f"""
+                    try {{
+                        const b64 = {json.dumps(b64_str)};
+                        const html = new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+                        
+                        const win = window.open('', '_blank');
+                        if (!win) {{
+                            alert('⚠️ Trình duyệt chặn Pop-up! Vui lòng cho phép Pop-up để in.');
+                        }} else {{
+                            win.document.write(html);
+                            win.document.close();
+                            setTimeout(() => {{ 
+                                win.focus(); 
+                                win.print(); 
+                            }}, 1000);
+                        }}
+                    }} catch (e) {{
+                        alert('Lỗi JS In: ' + e.message);
+                    }}
+                    """
+                    ui.run_javascript(js_code)
+                    
+                    # D. Refresh UI
+                    ui.notify(f'✅ Đã in {len(ma_list)} đơn hàng!', type='positive')
+                    self.refresh_data()
+                    if self.current_order and self.current_order['ma_don'] in ma_list:
+                        self.current_order['da_in'] = True
+                        self.render_detail_view()
+                        
+                    dialog.close() # Đóng popup
+                except Exception as e:
+                    ui.notify(f'Lỗi lệnh in: {str(e)}', type='negative')
+                    print(traceback.format_exc())
+
+            # 3. Tạo Dialog Preview UI
+            with ui.dialog() as dialog, ui.card().classes('w-full max-w-5xl h-[90vh] flex flex-col p-0 gap-0'):
+                
+                # Header
+                with ui.row().classes('w-full justify-between items-center p-4 border-b bg-slate-50'):
+                    with ui.row().classes('gap-2 items-center'):
+                        ui.icon('print', size='sm').classes('text-blue-600')
+                        ui.label(f'Xem trước bản in ({len(ma_list)} đơn)').classes('text-lg font-bold text-slate-700')
+                    ui.button(icon='close', on_click=dialog.close).props('flat round dense color=grey')
+                
+                # Body: Iframe
+                src_doc = html.escape(html_content)
+                with ui.element('div').classes('flex-1 w-full bg-gray-200 p-4 overflow-hidden'):
+                    # [FIXED] sanitize=False để hiển thị được iframe
+                    ui.html(
+                        f'<iframe srcdoc="{src_doc}" style="width:100%; height:100%; border:none; background:white; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);"></iframe>', 
+                        sanitize=False
+                    ).classes('w-full h-full')
+
+                # Footer
+                with ui.row().classes('w-full justify-end p-4 gap-4 border-t bg-white'):
+                    ui.button('Hủy bỏ', on_click=dialog.close).props('outline color=grey')
+                    ui.button('XÁC NHẬN & IN', icon='print', on_click=confirm_print).classes('bg-blue-600 text-white shadow-md')
+            
+            dialog.open()
+        except Exception as e:
+            ui.notify(f"Lỗi mở Preview: {str(e)}", type='negative')
+            print(traceback.format_exc())
+
+    # --- 3. XỬ LÝ NÚT IN GỘP ---
+    async def bulk_print(self):
+        try:
+            rows = await self.grid.get_selected_rows()
+            if not rows:
+                ui.notify('Vui lòng chọn ít nhất 1 đơn hàng!', type='warning')
+                return
+            
+            ma_list = [r['ma_don'] for r in rows]
+            ui.notify(f'Đang kiểm tra {len(ma_list)} đơn hàng...', spinner=True)
+            
+            invalid_list = []
+            valid_ma_list = []
+            
+            for ma in ma_list:
+                o, _ = get_order_details(ma)
+                if not o: continue
+                
+                can_print, msg = self.check_print_permission(o)
+                if not can_print:
+                    invalid_list.append(f"{ma}: {msg}")
+                else:
+                    valid_ma_list.append(ma)
+
+            if invalid_list:
+                msg_full = "⚠️ Không thể in gộp vì có đơn chưa đủ điều kiện:\n\n" + "\n".join(invalid_list[:5])
+                if len(invalid_list) > 5: msg_full += f"\n... và {len(invalid_list)-5} đơn khác."
+                
+                with ui.dialog() as dialog, ui.card():
+                    ui.label('⛔ Lỗi điều kiện in').classes('text-lg font-bold text-red-600')
+                    ui.label(msg_full).classes('whitespace-pre-wrap text-sm text-slate-700')
+                    ui.button('Đã hiểu', on_click=dialog.close).classes('w-full bg-red-100 text-red-800')
+                dialog.open()
+                return
+
+            self.show_print_preview(valid_ma_list)
+            
+        except Exception as e:
+            ui.notify(f"Lỗi Bulk Print: {str(e)}", type='negative')
+            print(traceback.format_exc())
 
     def build_ui(self):
         # ======================================================
-        # PHẦN 1: DANH SÁCH ĐƠN HÀNG (TOP - CỐ ĐỊNH CHIỀU CAO)
+        # PHẦN 1: DANH SÁCH ĐƠN HÀNG (TOP)
         # ======================================================
         with ui.column().classes('w-full h-[65vh] p-0 gap-2 mb-6'):
             
-            # 1.1. METRICS (KPIs)
+            # 1.1. METRICS
             with ui.row().classes('w-full gap-4'):
                 with ui.card().classes('flex-1 p-2 flex-row gap-4 items-center shadow-sm'):
                     with ui.column().classes('gap-0'):
@@ -113,7 +255,6 @@ class OrderPage:
                             ui.button('Áp dụng lọc', icon='search', on_click=self.apply_filters).classes('bg-blue-600 text-white px-6')
 
             # 1.3. AG GRID
-            # [FIXED] Dùng cellClicked thay vì rowClicked để ổn định hơn
             self.grid = ui.aggrid({
                 'columnDefs': [
                     {'field': 'ma_don', 'headerName': 'Mã', 'checkboxSelection': True, 'headerCheckboxSelection': True, 'width': 110},
@@ -134,7 +275,7 @@ class OrderPage:
                 }
             }).classes('w-full flex-1 min-h-0 shadow-sm border border-slate-200')
             
-            self.grid.on('cellClicked', self.on_row_click)  # [QUAN TRỌNG] Đã đổi về cellClicked
+            self.grid.on('cellClicked', self.on_row_click)
             self.grid.on('selectionChanged', self.update_selection_count)
             
             with ui.row().classes('w-full justify-between items-center p-1'):
@@ -144,7 +285,7 @@ class OrderPage:
                     ui.button('In Phiếu', icon='print', on_click=self.bulk_print).props('sm color=blue')
 
         # ======================================================
-        # PHẦN 2: CHI TIẾT ĐƠN HÀNG (BOTTOM - AUTO HEIGHT)
+        # PHẦN 2: CHI TIẾT ĐƠN HÀNG
         # ======================================================
         self.detail_container = ui.column().classes('w-full bg-white rounded-lg shadow-sm border p-4 pb-10')
         
@@ -155,17 +296,11 @@ class OrderPage:
 
         self.refresh_data()
 
-    # --- SỰ KIỆN CLICK (ĐÃ KHÔI PHỤC LOGIC DEBUG) ---
+    # --- SỰ KIỆN CLICK ---
     def on_row_click(self, e):
-        """Xử lý khi click vào ô trong bảng"""
-        # In log ra terminal để debug nếu click không ăn
-        print(f"👉 CLICK: {e.args}") 
-
         try:
             row_data = e.args.get('data')
-            if not row_data:
-                print("⚠️ Row data is empty")
-                return
+            if not row_data: return
 
             ma_don = row_data.get('ma_don')
             if not ma_don: return
@@ -177,9 +312,6 @@ class OrderPage:
                 self.current_order = order_info
                 self.current_items = items
                 self.render_detail_view()
-                
-                # Cuộn xuống phần chi tiết (Optional UX)
-                # ui.run_javascript(f'document.getElementById("c{self.detail_container.id}").scrollIntoView({{behavior: "smooth"}})')
             else:
                 ui.notify(f'Không tìm thấy dữ liệu: {ma_don}', type='warning')
 
@@ -192,13 +324,31 @@ class OrderPage:
     async def handle_image_upload(self, e, item_id, col_name):
         ui.notify('Đang upload ảnh...', spinner=True)
         try:
+            # Lấy dữ liệu file từ event (Hỗ trợ e.file và e.content)
+            content_obj = getattr(e, 'file', None) or getattr(e, 'content', None)
+            if not content_obj and hasattr(e, 'args'):
+                content_obj = e.args.get('file') or e.args.get('content')
+            
+            if not content_obj:
+                raise AttributeError(f"Không tìm thấy file trong event {type(e)}. Dir: {dir(e)}")
+
+            # Đọc dữ liệu (Hỗ trợ cả sync và async read)
+            if hasattr(content_obj, 'read'):
+                res = content_obj.read()
+                if hasattr(res, '__await__'): # Kiểm tra nếu là coroutine
+                    file_data = await res
+                else:
+                    file_data = res
+            else:
+                file_data = content_obj # Đã là bytes
+                
             fname = f"item_{item_id}_{col_name}_{int(datetime.now().timestamp())}.png"
-            url = upload_image_to_supabase(e.content, fname)
+            url = upload_image_to_supabase(file_data, fname)
+            
             if url:
                 update_item_image(item_id, url, col_name)
                 ui.notify(f'✅ Upload thành công: {col_name}')
                 
-                # Cập nhật UI ngay lập tức
                 for item in self.current_items:
                     if item['id'] == item_id:
                         item[col_name] = url
@@ -207,36 +357,115 @@ class OrderPage:
             else:
                 ui.notify('❌ Upload thất bại', type='negative')
         except Exception as ex:
+            print(f"ERROR UPLOAD: {traceback.format_exc()}")
             ui.notify(f'Lỗi upload: {str(ex)}', type='negative')
+
+    async def handle_multi_image_upload(self, e, item_id, col_name):
+        """Xử lý upload nhiều file mẫu thêu, hỗ trợ ghi đè khi chọn bộ file mới"""
+        now = time.time()
+        
+        # Khởi tạo hoặc lấy batch hiện tại
+        if item_id not in self.multi_upload_state:
+            self.multi_upload_state[item_id] = {'last_time': 0, 'urls': []}
+        
+        batch = self.multi_upload_state[item_id]
+        
+        # Nếu đã quá 3 giây từ file cuối cùng -> Coi như chọn bộ mới -> Ghi đè (Xóa cũ)
+        if now - batch['last_time'] > 3.0:
+            batch['urls'] = []
+            print(f"DEBUG: Bắt đầu batch multi-upload mới cho item {item_id}")
+
+        try:
+            # 1. Lấy dữ liệu file
+            content_obj = getattr(e, 'file', None) or getattr(e, 'content', None)
+            if not content_obj and hasattr(e, 'args'):
+                content_obj = e.args.get('file') or e.args.get('content')
+            
+            if not content_obj: return
+
+            if hasattr(content_obj, 'read'):
+                res = content_obj.read()
+                file_data = await res if hasattr(res, '__await__') else res
+            else:
+                file_data = content_obj
+
+            # 2. Upload (Dùng folder designs để phân biệt)
+            idx = len(batch['urls'])
+            fname = f"item_{item_id}_{col_name}_{int(datetime.now().timestamp())}_{idx}.png"
+            url = upload_image_to_supabase(file_data, fname, folder="designs")
+            
+            if url:
+                batch['urls'].append(url)
+                batch['last_time'] = now
+                self.multi_upload_state[item_id] = batch
+                
+                # Cập nhật DB (Nối bằng dấu " ; ")
+                str_urls = " ; ".join([u for u in batch['urls'] if u])
+                update_item_image(item_id, str_urls, col_name)
+                
+                # Cập nhật Local
+                for item in self.current_items:
+                    if item['id'] == item_id:
+                        item[col_name] = str_urls
+                        break
+                
+                # Debounced UI Refresh: Chỉ re-render sau khi nhận file cuối cùng trong batch
+                await asyncio.sleep(0.8)
+                # Nếu không có file nào mới hơn trong 0.8s -> Re-render
+                if time.time() - self.multi_upload_state[item_id]['last_time'] >= 0.8:
+                    self.render_detail_view()
+                    ui.notify(f'✅ Đã lưu {len(batch["urls"])} file thêu')
+        except Exception as ex:
+            print(f"ERROR MULTI-UPLOAD: {traceback.format_exc()}")
+            ui.notify(f'Lỗi upload multi: {str(ex)}', type='negative')
 
     async def handle_gen_ai(self, item_id, prompt_text, img_main_url):
         if not img_main_url:
             ui.notify('Cần có ảnh gốc để Gen AI!', type='warning')
             return
             
-        ui.notify('🎨 AI đang vẽ...', spinner=True, timeout=10000)
+        print(f"DEBUG: handle_gen_ai called for {item_id}, URL: {img_main_url}")
+        ui.notify(f'🚀 Đang kích hoạt AI cho item {item_id}...')
+        ui.notify('🎨 AI đang vẽ... (Có thể mất 15-30s)', spinner=True, timeout=30000)
         try:
             import requests
             import asyncio
-            res = await asyncio.to_thread(requests.get, img_main_url)
+            print(f"DEBUG: Downloading image from {img_main_url}")
+            res = await asyncio.to_thread(requests.get, img_main_url, timeout=10)
             if res.status_code == 200:
                 img_bytes = res.content
+                print(f"DEBUG: Downloaded {len(img_bytes)} bytes. Calling Gemini...")
                 ai_bytes = await asyncio.to_thread(gen_anh_mau_theu, img_bytes, prompt_text)
                 
                 if ai_bytes:
+                    print(f"DEBUG: Gemini returned {len(ai_bytes)} bytes. Uploading...")
                     fname = f"item_{item_id}_ai_{int(datetime.now().timestamp())}.png"
                     url = upload_image_to_supabase(ai_bytes, fname)
                     if url:
+                        print(f"DEBUG: Upload successful: {url}")
                         update_item_image(item_id, url, "img_sub1")
-                        ui.notify('✅ AI vẽ xong!')
+                        ui.notify('✅ AI vẽ xong!', type='positive')
+                        
+                        # Cập nhật state local
+                        for it in self.current_items:
+                            if it.get('id') == item_id:
+                                it['img_sub1'] = url
+                                break
+                                
                         _, new_items = get_order_details(self.current_order['ma_don'])
                         self.current_items = new_items
                         self.render_detail_view()
                     else:
+                        print("DEBUG: Upload failed")
                         ui.notify('Lỗi upload ảnh AI', type='negative')
                 else:
-                    ui.notify('AI không trả về kết quả', type='negative')
+                    print("DEBUG: Gemini returned None")
+                    ui.notify('AI không trả về kết quả (Kiểm tra Model/Key)', type='negative')
+            else:
+                print(f"DEBUG: Download failed with status {res.status_code}")
+                ui.notify(f'Không thể tải ảnh gốc ({res.status_code})', type='negative')
         except Exception as e:
+            print(f"ERROR GEN AI: {traceback.format_exc()}")
             ui.notify(f'Lỗi AI: {str(e)}', type='negative')
 
     # --- RENDER CHI TIẾT (FULL UX) ---
@@ -247,15 +476,13 @@ class OrderPage:
         o = self.current_order
         items = self.current_items
         
-        # Helper: Lưu Note
         def handle_save_feedback(item_obj, new_note):
             update_item_field(item_obj['id'], 'yeu_cau_sua', new_note)
             update_order_info(o['ma_don'], {"trang_thai": "Chờ sản xuất"})
             ui.notify('✅ Đã lưu Note và chuyển trạng thái!', type='positive')
-            self.refresh_data() # Làm mới bảng bên trên
-            self.render_detail_view() # Vẽ lại chi tiết
+            self.refresh_data()
+            self.render_detail_view()
 
-        # Data Clean
         if not isinstance(o.get('tags'), list): o['tags'] = []
         shop = o.get('shop') or 'Inside'
         
@@ -268,9 +495,12 @@ class OrderPage:
 
                 can_print, msg_print = self.check_print_permission(o)
                 with ui.row().classes('gap-2'):
-                    btn_in = ui.button('In Phiếu', icon='print', on_click=lambda: ui.open(f'/print/{o.get("ma_don")}', new_tab=True)) \
+                    btn_in = ui.button('In Phiếu', icon='print', 
+                                     on_click=lambda: self.show_print_preview([o.get("ma_don")])) \
                         .props(f'outline {"disabled" if not can_print else ""}')
+                    
                     if not can_print: btn_in.tooltip(msg_print)
+                    
                     ui.button('Lưu Thay Đổi', icon='save', on_click=self.save_changes).classes('bg-blue-600 text-white')
 
             # BODY
@@ -280,26 +510,22 @@ class OrderPage:
                 with ui.card().classes('w-[320px] p-4 shadow-sm gap-3 shrink-0 bg-slate-50'):
                     ui.label('📝 Thông tin đơn hàng').classes('font-bold text-slate-700')
                     
-                    # Shop & Trạng thái
                     ui.select(["Inside", "TGTĐ", "Lanh Canh"], value=shop, label="Shop").bind_value(o, 'shop').classes('w-full').props('dense')
                     
                     st_opts = list(ORDER_STATUSES)
                     if o.get('trang_thai') not in st_opts: st_opts.append(o.get('trang_thai'))
                     ui.select(st_opts, value=o.get('trang_thai'), label="Trạng thái").bind_value(o, 'trang_thai').classes('w-full').props('dense options-dense')
 
-                    # Info
                     ui.input('Tên khách', value=o.get('ten_khach')).bind_value(o, 'ten_khach').classes('w-full').props('dense')
                     ui.input('SĐT', value=o.get('sdt')).bind_value(o, 'sdt').classes('w-full').props('dense')
                     ui.textarea('Địa chỉ', value=o.get('dia_chi')).bind_value(o, 'dia_chi').classes('w-full').props('dense rows=2')
                     
-                    # Date
                     with ui.row().classes('w-full'):
                         ui.input('Ngày đặt', value=str(o.get('ngay_dat'))[:10]).bind_value(o, 'ngay_dat').props('dense type=date').classes('w-1/2')
                         ui.input('Ngày trả', value=str(o.get('ngay_tra'))[:10]).bind_value(o, 'ngay_tra').props('dense type=date').classes('w-1/2')
 
                     ui.separator().classes('my-2')
                     
-                    # Money
                     ui.label('💰 Tài chính').classes('font-bold text-slate-700')
                     with ui.column().classes('w-full gap-1'):
                         num_tong = ui.number('Tổng tiền', value=o.get('thanh_tien'), format='%.0f').bind_value(o, 'thanh_tien').classes('w-full').props('dense')
@@ -316,11 +542,9 @@ class OrderPage:
                         num_coc.on('change', update_con_lai)
                         update_con_lai()
 
-                    # Meta
                     ui.select(list(set(PRODUCTION_TAGS + o['tags'])), value=o['tags'], multiple=True, label='Tags').bind_value(o, 'tags').classes('w-full').props('use-chips dense')
                     ui.input('Ghi chú', value=o.get('ghi_chu')).bind_value(o, 'ghi_chu').classes('w-full').props('dense')
                     
-                    # Footer Button
                     ui.separator().classes('my-1')
                     with ui.row().classes('w-full gap-2'):
                         if o.get('trang_thai') in ['Mới', 'New']:
@@ -336,7 +560,6 @@ class OrderPage:
                     for item in items:
                         with ui.card().classes('w-full p-3 border shadow-sm bg-slate-50'):
                             
-                            # LOGIC LAYOUT SHOP (TGTĐ / Inside / Lanh Canh)
                             if shop == "Lanh Canh":
                                 with ui.grid(columns=3).classes('w-full gap-4'):
                                     with ui.column().classes('gap-1'):
@@ -371,7 +594,7 @@ class OrderPage:
                                         hien_thi_anh_vuong(item.get('img_design'))
                                         ui.upload(auto_upload=True, on_upload=lambda e, i=item['id']: self.handle_image_upload(e, i, 'img_design')).props('flat dense').classes('w-full h-8')
                                         if o.get('trang_thai') == "Đang thiết kế":
-                                            ui.button('🚀 Gửi duyệt', on_click=lambda: self.update_status_and_reload('Chờ duyệt thiết kế')).props('dense size=sm color=purple')
+                                            ui.button('🚀 Gửi duyệt', on_click=lambda _: self.update_status_and_reload('Chờ duyệt thiết kế')).props('dense size=sm color=purple')
 
                             else: # TGTĐ
                                 with ui.grid(columns=5).classes('w-full gap-4'):
@@ -386,20 +609,32 @@ class OrderPage:
                                     with ui.column().classes('gap-1'):
                                         ui.label('2️⃣ Kết quả AI').classes('text-xs font-bold')
                                         hien_thi_anh_vuong(item.get('img_sub1'))
-                                        ui.button('✨ Gen AI', on_click=lambda i=item: self.handle_gen_ai(i['id'], f"{i['ten_san_pham']} {i['kieu_theu']}", i['img_main'])).props('dense size=sm color=blue')
+                                        ui.button('✨ Gen AI', on_click=lambda e, i=item: self.handle_gen_ai(
+                                            i.get('id'), 
+                                            f"{i.get('ten_san_pham', i.get('ten_sp',''))} {i.get('kieu_theu', '')}", 
+                                            i.get('img_main')
+                                        )).props('dense size=sm color=blue')
                                     with ui.column().classes('gap-1'):
                                         ui.label('3️⃣ Design').classes('text-xs font-bold')
                                         hien_thi_anh_vuong(item.get('img_design'))
                                         ui.upload(auto_upload=True, on_upload=lambda e, i=item['id']: self.handle_image_upload(e, i, 'img_design')).props('flat dense').classes('w-full h-8')
                                         if o.get('trang_thai') == "Đang thiết kế":
-                                            ui.button('🚀 Duyệt', on_click=lambda: self.update_status_and_reload('Chờ duyệt thiết kế')).props('dense size=sm color=purple')
+                                            ui.button('🚀 Duyệt', on_click=lambda _: self.update_status_and_reload('Chờ duyệt thiết kế')).props('dense size=sm color=purple')
                                     with ui.column().classes('gap-1'):
                                         ui.label('4️⃣ File Thêu').classes('text-xs font-bold')
-                                        if item.get('img_sub2'): ui.link('💾 Tải File', item.get('img_sub2')).classes('text-xs')
-                                        else: ui.label('Trống').classes('text-xs italic')
-                                        ui.upload(auto_upload=True, on_upload=lambda e, i=item['id']: self.handle_image_upload(e, i, 'img_sub2')).props('flat dense').classes('w-full h-8')
+                                        if item.get('img_sub2'):
+                                            links = item.get('img_sub2', '').split(' ; ')
+                                            with ui.column().classes('gap-0'):
+                                                for idx, l in enumerate(links):
+                                                    if l.strip():
+                                                        ui.link(f'💾 File {idx+1}', l).classes('text-[10px] block text-blue-600')
+                                        else:
+                                            ui.label('Trống').classes('text-xs italic text-slate-400')
+                                        
+                                        ui.upload(multiple=True, auto_upload=True, 
+                                                  on_upload=lambda e, i=item['id']: self.handle_multi_image_upload(e, i, 'img_sub2')) \
+                                            .props('flat dense').classes('w-full h-8')
 
-                            # FEEDBACK SECTION
                             ui.separator().classes('my-2')
                             ui.label('🛠️ Yêu cầu sửa / Feedback khách hàng').classes('text-sm font-bold text-slate-700')
                             
@@ -517,122 +752,48 @@ class OrderPage:
         self.kpi_thuc_nhan.text = f"{dt_thuc_nhan:,.0f} đ"
 
     def update_reminders(self, _=None):
-        """
-        Cập nhật box Nhắc việc quan trọng.
-        Lưu ý: Dùng self.df_original để tính toán trên TOÀN BỘ dữ liệu, 
-        không bị ảnh hưởng bởi bộ lọc search/status bên phải.
-        """
         self.alert_today.clear()
         self.alert_tomorrow.clear()
-        
         if self.df_original.empty: return
-
-        # 1. Lấy data chưa xong từ DF GỐC (Logic chuẩn Streamlit cũ)
         ignore_statuses = STATUS_DONE + STATUS_CANCEL
-        # Lọc các đơn chưa hoàn thành/hủy
         df_pending = self.df_original[~self.df_original['trang_thai'].isin(ignore_statuses)]
-        
         today = datetime.now().date()
         tomorrow = today + timedelta(days=1)
-        
-        # 2. Tính toán
-        # - Đơn Hẹn Trả Hôm Nay: Phải có hẹn ngày (True) VÀ Ngày trả = Hôm nay
-        df_urgent_today = df_pending.loc[
-            (df_pending['co_hen_ngay'] == True) & 
-            (df_pending['date_tra_obj'] == today)
-        ]
-        
-        # - Đơn Trả Ngày Mai: Chỉ cần Ngày trả = Mai (Không cần check có hẹn hay không)
-        df_due_tomorrow = df_pending.loc[
-            (df_pending['date_tra_obj'] == tomorrow)
-        ]
+        df_urgent_today = df_pending.loc[(df_pending['co_hen_ngay'] == True) & (df_pending['date_tra_obj'] == today)]
+        df_due_tomorrow = df_pending.loc[(df_pending['date_tra_obj'] == tomorrow)]
 
-        # 3. Render UI - BOX HÔM NAY
         with self.alert_today:
             count_today = len(df_urgent_today)
             if count_today > 0:
-                # Tương đương st.error
                 with ui.row().classes('w-full items-center gap-2 text-red-800 bg-red-100 p-2 rounded border border-red-200'):
                     ui.label(f"🔥 HÔM NAY: {count_today} đơn hẹn gấp!").classes('font-bold text-xs')
-                
-                # Tương đương st.expander
                 with ui.expansion('Xem chi tiết', icon='list').classes('w-full text-xs text-red-800 bg-white border border-red-100 rounded'):
                     with ui.column().classes('gap-1 p-2'):
                         for _, row in df_urgent_today.iterrows():
                             ui.label(f"• {row['ma_don']} | {row['ten_khach']}").classes('text-[10px] ml-1')
             else:
-                # Tương đương st.success
                 with ui.row().classes('w-full items-center gap-2 text-green-800 bg-green-100 p-2 rounded border border-green-200'):
                     ui.icon('thumb_up', size='xs')
                     ui.label("Hôm nay: Không có đơn hẹn gấp.").classes('font-bold text-xs')
 
-        # 4. Render UI - BOX NGÀY MAI
         with self.alert_tomorrow:
             count_tomorrow = len(df_due_tomorrow)
             if count_tomorrow > 0:
-                # Tương đương st.warning
                 with ui.row().classes('w-full items-center gap-2 text-orange-900 bg-orange-100 p-2 rounded border border-orange-200'):
                     ui.label(f"⏳ NGÀY MAI: {count_tomorrow} đơn cần trả.").classes('font-bold text-xs')
-                
                 with ui.expansion('Xem chi tiết', icon='list').classes('w-full text-xs text-orange-900 bg-white border border-orange-100 rounded'):
                     with ui.column().classes('gap-1 p-2'):
                         for _, row in df_due_tomorrow.iterrows():
                             icon_hen = "🚨" if row.get('co_hen_ngay') else ""
                             ui.label(f"• {icon_hen} {row['ma_don']} | {row['ten_khach']}").classes('text-[10px] ml-1')
             else:
-                # Tương đương st.info
                 with ui.row().classes('w-full items-center gap-2 text-blue-800 bg-blue-100 p-2 rounded border border-blue-200'):
                     ui.icon('coffee', size='xs')
                     ui.label("Ngày mai: Chưa có lịch trả hàng.").classes('font-bold text-xs')
+
     async def update_selection_count(self):
         rows = await self.grid.get_selected_rows()
         self.lbl_selected_count.text = f"Đã chọn: {len(rows)}"
-
-    async def bulk_print(self):
-        rows = await self.grid.get_selected_rows()
-        if not rows:
-            ui.notify('Vui lòng chọn ít nhất 1 đơn hàng!', type='warning')
-            return
-            
-        ma_list = [r['ma_don'] for r in rows]
-        data_to_print = []
-        invalid_list = []
-        
-        ui.notify(f'Đang kiểm tra {len(ma_list)} đơn hàng...', spinner=True)
-        
-        for ma in ma_list:
-            o, i = get_order_details(ma)
-            if not o: continue
-            
-            can_print, msg = self.check_print_permission(o)
-            if not can_print:
-                invalid_list.append(f"{ma}: {msg}")
-            else:
-                data_to_print.append({"order_info": o, "items": i})
-
-        # Nếu có bất kỳ đơn nào không đủ điều kiện -> Không cho in cả list
-        if invalid_list:
-            msg_full = "⚠️ Không thể in bulk vì có đơn chưa đủ điều kiện:\n" + "\n".join(invalid_list[:5])
-            if len(invalid_list) > 5: msg_full += f"\n... và {len(invalid_list)-5} đơn khác."
-            
-            with ui.dialog() as dialog, ui.card():
-                ui.label('⚠️ Lỗi in hàng loạt').classes('text-lg font-bold text-red-600')
-                ui.label(msg_full).classes('whitespace-pre-wrap text-sm')
-                ui.button('Đã hiểu', on_click=dialog.close).classes('w-full')
-            dialog.open()
-            return
-
-        # Nếu tất cả hợp lệ -> Tiến hành in
-        for ma in ma_list:
-            mark_order_as_printed(ma)
-            
-        html = generate_combined_print_html(data_to_print)
-        # Sử dụng base64 để tránh lỗi ký tự đặc biệt khi download HTML trực tiếp
-        import base64
-        b64_html = base64.b64encode(html.encode('utf-8')).decode()
-        ui.download(f'data:text/html;base64,{b64_html}', f'In_Gop_{len(ma_list)}_don.html')
-        ui.notify(f'🎉 Đã chuẩn bị bản in cho {len(ma_list)} đơn hàng!', type='positive')
-        self.refresh_data()
 
     async def bulk_export_excel(self):
         rows = await self.grid.get_selected_rows()
@@ -650,8 +811,6 @@ class OrderPage:
             o, i = get_order_details(ma)
             if o:
                 data.append({"order_info": o, "items": i})
-                
-                # Logic: Xuất Excel -> Chuyển sang "Chờ sản xuất" (Giống bản Streamlit)
                 if o.get('trang_thai') in allow_auto_update:
                     update_order_info(ma, {"trang_thai": "Chờ sản xuất"})
         

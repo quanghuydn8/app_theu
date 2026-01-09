@@ -384,15 +384,36 @@ class CustomerPage:
         # Helper: Upload ảnh
         async def handle_image_upload_here(e, item_id, field):
             from backend.data_handler import upload_image_to_supabase, update_item_image
-            content = e.content.read()
-            fname = f"item_{item_id}_{field}_{int(__import__('time').time())}.png"
-            url = upload_image_to_supabase(content, fname)
-            if url:
-                update_item_image(item_id, url, field)
-                ui.notify('✅ Upload thành công!', type='positive')
-                self.render_full_order_detail(ma_don)
-            else:
-                ui.notify('⚠️ Lỗi upload', type='negative')
+            try:
+                # Lấy dữ liệu file từ event (Hỗ trợ e.file và e.content)
+                content_obj = getattr(e, 'file', None) or getattr(e, 'content', None)
+                if not content_obj and hasattr(e, 'args'):
+                    content_obj = e.args.get('file') or e.args.get('content')
+                
+                if not content_obj:
+                    raise AttributeError(f"Không tìm thấy file trong event {type(e)}")
+
+                # Đọc dữ liệu (Hỗ trợ cả sync và async read)
+                if hasattr(content_obj, 'read'):
+                    res = content_obj.read()
+                    if hasattr(res, '__await__'):
+                        file_data = await res
+                    else:
+                        file_data = res
+                else:
+                    file_data = content_obj # Đã là bytes
+
+                fname = f"item_{item_id}_{field}_{int(__import__('time').time())}.png"
+                url = upload_image_to_supabase(file_data, fname)
+                if url:
+                    update_item_image(item_id, url, field)
+                    ui.notify('✅ Upload thành công!', type='positive')
+                    self.render_full_order_detail(ma_don)
+                else:
+                    ui.notify('⚠️ Lỗi upload thất bại', type='negative')
+            except Exception as ex:
+                print(f"ERROR UPLOAD CUSTOMER: {traceback.format_exc()}")
+                ui.notify(f'Lỗi upload: {str(ex)}', type='negative')
 
         # Helper: Save order
         def save_order_changes():

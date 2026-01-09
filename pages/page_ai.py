@@ -79,16 +79,29 @@ class AIEditPage:
         """Xử lý khi user upload ảnh gốc"""
         ui.notify('Đang tải ảnh lên...', type='info', spinner=True)
         try:
-            # 1. Đọc bytes từ file upload
-            self.input_bytes = e.content.read()
+            # [FIX] Lấy dữ liệu file từ event (Hỗ trợ e.file và e.content)
+            content_obj = getattr(e, 'file', None) or getattr(e, 'content', None)
+            if not content_obj and hasattr(e, 'args'):
+                content_obj = e.args.get('file') or e.args.get('content')
+            
+            if not content_obj:
+                raise AttributeError(f"Không tìm thấy file trong event {type(e)}")
+
+            # Đọc dữ liệu (Hỗ trợ cả sync và async read)
+            if hasattr(content_obj, 'read'):
+                res = content_obj.read()
+                if hasattr(res, '__await__'):
+                    self.input_bytes = await res
+                else:
+                    self.input_bytes = res
+            else:
+                self.input_bytes = content_obj # Đã là bytes
             
             # 2. Upload lên Supabase (Folder ai_temp) để lấy URL hiển thị
-            # Cần bọc bytes vào BytesIO vì hàm upload backend dùng Image.open()
-            file_obj = io.BytesIO(self.input_bytes)
             fname = f"ai_input_{int(time.time())}.png"
             
             # Chạy async để không đơ UI
-            url = await asyncio.to_thread(upload_image_to_supabase, file_obj, fname, "ai_temp")
+            url = await asyncio.to_thread(upload_image_to_supabase, self.input_bytes, fname, "ai_temp")
             
             if url:
                 self.input_url = url
@@ -101,6 +114,8 @@ class AIEditPage:
                 ui.notify('❌ Lỗi upload lên server', type='negative')
                 
         except Exception as ex:
+            import traceback
+            print(f"ERROR UPLOAD AI: {traceback.format_exc()}")
             ui.notify(f'Lỗi: {str(ex)}', type='negative')
 
     async def handle_generate(self):
